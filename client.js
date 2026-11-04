@@ -49,11 +49,20 @@ window.__ModuleLoader__.load({
     const REMOVAL_MS = STRIKE_MS + HOLD_MS + SINK_MS + REST_MS + FLY_MS;
     const OWN_ROW_SELECTOR = '[data-dsh-conversation-manager="delete"]';
 
+    // The Session list lives in the left sidebar column, while the conversation
+    // header at the top of the page repeats the very same title text. A row is
+    // therefore only accepted when it hugs the window's left edge, which is what
+    // separates a sidebar row from the page header.
+    const SIDEBAR_MAX_LEFT = 140;
+    const SIDEBAR_MAX_WIDTH = 640;
+
     /** Is this element shaped like one Session row of the sidebar list? */
     function looksLikeSessionRow(element) {
       if (!element || element.querySelector(OWN_ROW_SELECTOR)) return false;
       const rect = element.getBoundingClientRect();
-      return rect.height >= 22 && rect.height <= 64 && rect.width >= 140;
+      if (!(rect.height >= 22 && rect.height <= 64)) return false;
+      if (!(rect.width >= 140 && rect.width <= SIDEBAR_MAX_WIDTH)) return false;
+      return rect.left <= SIDEBAR_MAX_LEFT;
     }
 
     /** Walk up from `element` to the nearest ancestor that reads as a Session row. */
@@ -90,6 +99,9 @@ window.__ModuleLoader__.load({
         if (node.children.length > 0) continue;
         if (node.querySelector(OWN_ROW_SELECTOR)) continue;
         if ((node.textContent || '').replace(/\s+/g, ' ').trim() !== title) continue;
+        // Only the sidebar copy of the title counts: the page header repeats it.
+        const nodeRect = typeof node.getBoundingClientRect === 'function' ? node.getBoundingClientRect() : null;
+        if (nodeRect && nodeRect.left > SIDEBAR_MAX_LEFT) continue;
         match = node;
       }
       if (!match) return null;
