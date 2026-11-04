@@ -394,11 +394,27 @@ async function handleDelete(ctx, request) {
     }
     const cleanup = await forgetInRegistry(ctx, sessionId);
     if (hidden) await writeJournal([...(await readJournal()), sessionId]);
+    // A still-live container can recreate the store right after removal; sweep
+    // once more so "deleted" is not undone by a late flush.
+    let swept = 0;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      const again = await locateSessionDirs(ctx, sessionId);
+      if (again.length === 0) break;
+      try {
+        await removeStorage(ctx, sessionId, again);
+        swept += again.length;
+      } catch (error) {
+        warn('sweep failed', sessionId, textOf(error));
+        break;
+      }
+    }
     return json(200, {
       ok: true,
       sessionId,
       removedGroups: storage.targets.length,
       removedPaths: storage.removed.length,
+      swept,
       detached: cleanup.detached,
       hidden,
     });
