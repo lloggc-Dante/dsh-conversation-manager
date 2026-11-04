@@ -92,12 +92,47 @@ window.__ModuleLoader__.load({
       return closestSessionRow(match, title) || match.parentElement;
     }
 
+    /** The leaf element inside the row that renders the Session title. */
+    function findTitleElement(row, displayTitle) {
+      const title = typeof displayTitle === 'string' ? displayTitle.replace(/\s+/g, ' ').trim() : '';
+      if (!title || typeof row.querySelectorAll !== 'function') return null;
+      const nodes = row.querySelectorAll('span, div, p, a, button');
+      let match = null;
+      for (const node of nodes) {
+        if (node === row) continue;
+        if (node.children && node.children.length > 0) continue;
+        if ((node.textContent || '').replace(/\s+/g, ' ').trim() !== title) continue;
+        match = node;
+      }
+      return match;
+    }
+
+    /**
+     * Where the strike line goes: across the title text itself (a pen stroke over
+     * the label), falling back to the whole row when the title cannot be measured.
+     */
+    function strikePlacement(row, titleElement) {
+      if (!titleElement || typeof titleElement.getBoundingClientRect !== 'function') return null;
+      try {
+        const rowRect = row.getBoundingClientRect();
+        const titleRect = titleElement.getBoundingClientRect();
+        if (!(titleRect.width > 0) || !(titleRect.height > 0)) return null;
+        return {
+          left: titleRect.left - rowRect.left,
+          top: titleRect.top - rowRect.top + titleRect.height / 2 - 1,
+          width: titleRect.width,
+        };
+      } catch {
+        return null;
+      }
+    }
+
     /**
      * Play the v1 removal choreography on the row itself, before the Host drops it.
      * `done` settles when the choreography finishes; `restore` puts the row back
      * when the delete turns out to have failed.
      */
-    function startRemovalAnimation(row) {
+    function startRemovalAnimation(row, displayTitle) {
       const media = typeof window !== 'undefined' && window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
       const reduced = Boolean(media && media.matches);
       const previous = { position: row.style.position, overflow: row.style.overflow, pointerEvents: row.style.pointerEvents };
@@ -108,13 +143,15 @@ window.__ModuleLoader__.load({
           row.style.position = 'relative';
           row.style.overflow = 'hidden';
           row.style.pointerEvents = 'none';
+          // Strike the title text, like crossing the words out with a pen.
+          const placement = strikePlacement(row, findTitleElement(row, displayTitle));
           line = document.createElement('span');
           line.setAttribute('aria-hidden', 'true');
           Object.assign(line.style, {
             position: 'absolute',
-            left: '0',
-            top: '50%',
-            width: '100%',
+            left: placement ? `${placement.left}px` : '8px',
+            top: placement ? `${placement.top}px` : '50%',
+            width: placement ? `${placement.width}px` : 'calc(100% - 16px)',
             height: '2px',
             borderRadius: '2px',
             pointerEvents: 'none',
@@ -329,7 +366,7 @@ window.__ModuleLoader__.load({
           // mounted, so the POST waits for the effect to settle.
           const title = typeof props.displayTitle === 'string' ? props.displayTitle : '';
           const row = findSessionRow(title);
-          const effect = row ? startRemovalAnimation(row) : null;
+          const effect = row ? startRemovalAnimation(row, title) : null;
           // Clear the menu once the strike has landed, so the exit animation is not
           // hidden behind the popup.
           if (effect) window.setTimeout(dismissMenu, STRIKE_MS);
