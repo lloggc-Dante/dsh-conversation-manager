@@ -1,0 +1,10 @@
+# dsh-conversation-manager bundle patch.
+#
+# One dual-face plugin row: the node half (exports ".") runs in the host process
+# and registers POST /api/conversation-manager/delete on the authenticated
+# connection fetch channel; the `dsh.client` manifest field makes the browser
+# half (exports "./client", served at /plugins/<id>/client.js) add the red
+# "delete conversation" row to the sidebar session menu.
+- insert:
+    - id: conversation-manager
+      name: 'dsh-conversation-manager'

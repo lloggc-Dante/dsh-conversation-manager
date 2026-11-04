@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Conversation Manager",
+    "description": "Delete unwanted conversations straight from the session menu, removing their on-disk session store too."
+  }
+}
