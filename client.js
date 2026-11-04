@@ -21,6 +21,17 @@ window.__ModuleLoader__.load({
       'menu.done': '已删除',
       'menu.retry': '删除失败，点击重试',
       'error.empty': '没有收到主进程响应，请重试。',
+      'multi.label': '多选',
+      'multi.selected': '已选 {count} 个对话',
+      'multi.none': '未选择对话',
+      'multi.cancel': '取消',
+      'multi.delete': '删除',
+      'multi.busy': '正在删除…',
+      'multi.failed': '有 {count} 个对话删除失败',
+      'multi.confirm.title': '删除选中的对话？',
+      'multi.confirm.body': '将永久删除 {count} 个对话及其本地记录，无法恢复。',
+      'multi.confirm.cancel': '取消',
+      'multi.confirm.confirm': '确认删除',
     };
 
     const dictionaries = {
@@ -31,8 +42,39 @@ window.__ModuleLoader__.load({
         'menu.done': 'Deleted',
         'menu.retry': 'Delete failed, click to retry',
         'error.empty': 'No response from the host. Try again.',
+        'multi.label': 'Select',
+        'multi.selected': '{count} selected',
+        'multi.none': 'Nothing selected',
+        'multi.cancel': 'Cancel',
+        'multi.delete': 'Delete',
+        'multi.busy': 'Deleting…',
+        'multi.failed': '{count} conversation(s) failed to delete',
+        'multi.confirm.title': 'Delete the selected conversations?',
+        'multi.confirm.body': 'This permanently deletes {count} conversations and their local records. It cannot be undone.',
+        'multi.confirm.cancel': 'Cancel',
+        'multi.confirm.confirm': 'Delete',
       },
     };
+
+    /** Ask the Host half to delete one conversation; throws the Host's reason. */
+    async function requestDelete(sessionId) {
+      const response = await fetch(new URL(ROUTE, document.baseURI), {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json', [ACTION_HEADER]: '1' },
+        body: JSON.stringify({ sessionId }),
+      });
+      let payload;
+      try {
+        payload = await response.json();
+      } catch {
+        payload = undefined;
+      }
+      if (!response.ok || !payload || payload.ok !== true) {
+        throw new Error((payload && (payload.message || payload.error)) || `HTTP ${response.status}`);
+      }
+      return payload;
+    }
 
     // How long the sidebar gets to drop the row by itself (Host pushes the new
     // workspace snapshot) before falling back to a full page reload.
@@ -347,6 +389,468 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /* ---------------------------------------------------------------------- *
+     * Multi-select: toggle beside the search box, a circle per Session row, a
+     * delete bar above the account footer, and one confirmation dialog.
+     * ---------------------------------------------------------------------- */
+
+    const MULTI_CSS = `
+html.dsh-cm-multi [data-row-key^="session:"] { position: relative; }
+html.dsh-cm-multi [data-row-key^="session:"] > span:first-child { visibility: hidden; }
+html.dsh-cm-multi [data-row-key^="session:"]::before {
+  content: ""; position: absolute; left: 4px; top: 50%; width: 12px; height: 12px;
+  margin-top: -6px; box-sizing: border-box; border-radius: 50%;
+  border: 1.5px solid var(--dsw-alias-label-secondary, #8a8f98);
+  background: transparent; pointer-events: none; z-index: 2;
+}
+html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected]::before {
+  background: var(--dsw-alias-brand-primary, #4d6bfe);
+  border-color: var(--dsw-alias-brand-primary, #4d6bfe);
+}
+html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background: var(--dsw-alias-bg-layer-2, rgba(127,127,127,.12)); }
+`;
+
+    function createMultiSelect() {
+      let state = { active: false, selected: new Set() };
+      const listeners = new Set();
+      const emit = () => {
+        for (const listener of [...listeners]) {
+          try {
+            listener();
+          } catch {
+            /* a broken subscriber must not break the mode */
+          }
+        }
+      };
+      const set = (next) => {
+        state = next;
+        emit();
+      };
+      return {
+        get: () => state,
+        subscribe(listener) {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+        toggleActive() {
+          set(state.active ? { active: false, selected: new Set() } : { active: true, selected: new Set() });
+        },
+        exit() {
+          if (state.active) set({ active: false, selected: new Set() });
+        },
+        toggle(sessionId) {
+          if (!state.active) return;
+          const selected = new Set(state.selected);
+          if (selected.has(sessionId)) selected.delete(sessionId);
+          else selected.add(sessionId);
+          set({ active: state.active, selected });
+        },
+        clearAndExit() {
+          set({ active: false, selected: new Set() });
+        },
+      };
+    }
+
+    function useMultiState(multi) {
+      const [state, setState] = React.useState(multi.get);
+      React.useEffect(() => {
+        setState(multi.get());
+        return multi.subscribe(() => setState(multi.get()));
+      }, [multi]);
+      return state;
+    }
+
+    const ROW_KEY_PREFIX = 'session:';
+    const rowSessionId = (element) => {
+      const value = element.getAttribute('data-row-key') || '';
+      return value.startsWith(ROW_KEY_PREFIX) ? value.slice(ROW_KEY_PREFIX.length) : '';
+    };
+
+    /** Wire the mode into the shipped row DOM: circles, click interception, Escape. */
+    function installMultiSelectDom(multi) {
+      if (typeof document === 'undefined') return () => {};
+      let frame = 0;
+      const sync = () => {
+        frame = 0;
+        const state = multi.get();
+        document.documentElement.classList.toggle('dsh-cm-multi', state.active);
+        for (const row of document.querySelectorAll('[data-row-key^="session:"]')) {
+          const id = rowSessionId(row);
+          if (state.active && state.selected.has(id)) row.setAttribute('data-dsh-cm-selected', '');
+          else row.removeAttribute('data-dsh-cm-selected');
+        }
+      };
+      const schedule = () => {
+        if (frame) return;
+        frame = window.requestAnimationFrame(sync);
+      };
+      const unsubscribe = multi.subscribe(schedule);
+      const observer = new MutationObserver(schedule);
+      observer.observe(document.body, { childList: true, subtree: true });
+
+      const onClick = (event) => {
+        const state = multi.get();
+        if (!state.active) return;
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+        if (target.closest('.dsh-cm-multi-root')) return;
+        const row = target.closest('[data-row-key^="session:"]');
+        if (!row) return;
+        event.preventDefault();
+        event.stopPropagation();
+        multi.toggle(rowSessionId(row));
+      };
+      const onKeyDown = (event) => {
+        const state = multi.get();
+        if (!state.active) return;
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          event.stopPropagation();
+          multi.exit();
+          return;
+        }
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+        const row = target.closest('[data-row-key^="session:"]');
+        if (!row) return;
+        event.preventDefault();
+        event.stopPropagation();
+        multi.toggle(rowSessionId(row));
+      };
+      document.addEventListener('click', onClick, true);
+      document.addEventListener('keydown', onKeyDown, true);
+      schedule();
+      return () => {
+        unsubscribe();
+        observer.disconnect();
+        document.removeEventListener('click', onClick, true);
+        document.removeEventListener('keydown', onKeyDown, true);
+        if (frame) window.cancelAnimationFrame(frame);
+        document.documentElement.classList.remove('dsh-cm-multi');
+        for (const row of document.querySelectorAll('[data-row-key^="session:"]')) row.removeAttribute('data-dsh-cm-selected');
+      };
+    }
+
+    /** Locate the sidebar search input and the column around it. */
+    function measureAnchors() {
+      if (typeof document === 'undefined') return { toggle: null, bar: null };
+      const viewportHeight = window.innerHeight || 800;
+      const viewportWidth = window.innerWidth || 1200;
+      let found = null;
+      for (const input of document.querySelectorAll('input')) {
+        const type = (input.getAttribute('type') || '').toLowerCase();
+        if (type !== 'text' && type !== 'search') continue;
+        const box = input.parentElement || input;
+        const boxRect = box.getBoundingClientRect();
+        if (!(boxRect.width >= 16 && boxRect.height >= 14)) continue;
+        if (boxRect.left < 0 || boxRect.left > Math.min(460, viewportWidth * 0.45)) continue;
+        if (boxRect.top > viewportHeight * 0.45) continue;
+        found = { input, box, boxRect };
+        break;
+      }
+      if (!found) return { toggle: null, bar: null };
+      const { boxRect } = found;
+      const expanded = boxRect.width > 130;
+      let sidebarRect = null;
+      let node = found.input;
+      while (node && node !== document.body) {
+        const rect = node.getBoundingClientRect();
+        if (rect.left <= 12 && rect.width >= 180 && rect.width <= 560 && rect.height >= viewportHeight * 0.6) {
+          sidebarRect = rect;
+          break;
+        }
+        node = node.parentElement;
+      }
+      const toggleWidth = 62;
+      const toggle = expanded || boxRect.left < 90
+        ? null
+        : { left: boxRect.left - toggleWidth - 6, top: boxRect.top + (boxRect.height - 24) / 2, width: toggleWidth };
+      const bar = sidebarRect
+        ? { left: sidebarRect.left + 12, width: Math.max(150, sidebarRect.width - 24), bottom: 66 }
+        : null;
+      return { toggle, bar };
+    }
+
+    const sameAnchors = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+    function multiIcon(kind) {
+      if (kind === 'check') {
+        return h(
+          'svg',
+          { viewBox: '0 0 16 16', width: 14, height: 14, fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': 'true' },
+          h('path', { d: 'M3 4.5l1.6 1.6L7.4 3' }),
+          h('path', { d: 'M3 10.5l1.6 1.6L7.4 9' }),
+          h('path', { d: 'M9.2 5h4' }),
+          h('path', { d: 'M9.2 11h4' }),
+        );
+      }
+      return h(
+        'svg',
+        { viewBox: '0 0 16 16', width: 14, height: 14, fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': 'true' },
+        h('path', { d: 'M2.5 4.5h11' }),
+        h('path', { d: 'M2.5 8h11' }),
+        h('path', { d: 'M2.5 11.5h11' }),
+      );
+    }
+
+    function MultiSelectOverlay(props) {
+      const multi = props.multi;
+      const translate = typeof props.translate === 'function' ? props.translate : (key) => FALLBACK[key] || key;
+      const requestDelete = props.requestDelete;
+      const state = useMultiState(multi);
+      const [anchors, setAnchors] = React.useState(measureAnchors);
+      const [confirming, setConfirming] = React.useState(false);
+      const [busy, setBusy] = React.useState(false);
+      const [errorText, setErrorText] = React.useState('');
+
+      React.useEffect(() => {
+        let alive = true;
+        const update = () => {
+          if (!alive) return;
+          const next = measureAnchors();
+          setAnchors((previous) => (sameAnchors(previous, next) ? previous : next));
+        };
+        update();
+        const timer = window.setInterval(update, 400);
+        window.addEventListener('resize', update);
+        return () => {
+          alive = false;
+          window.clearInterval(timer);
+          window.removeEventListener('resize', update);
+        };
+      }, []);
+
+      const count = state.selected.size;
+      const selectedIds = React.useMemo(() => [...state.selected], [state.selected]);
+
+      const runDelete = React.useCallback(async () => {
+        if (busy) return;
+        const ids = [...multi.get().selected];
+        if (ids.length === 0) return;
+        setBusy(true);
+        setErrorText('');
+        const failures = [];
+        for (const id of ids) {
+          try {
+            await requestDelete(id);
+          } catch (error) {
+            failures.push(error && error.message ? error.message : String(error));
+          }
+        }
+        setBusy(false);
+        setConfirming(false);
+        multi.clearAndExit();
+        if (failures.length > 0) {
+          try {
+            window.alert(translate('multi.failed').replace('{count}', String(failures.length)) + '\n' + failures[0]);
+          } catch {
+            /* alert unavailable */
+          }
+        }
+      }, [busy, multi, requestDelete, translate]);
+
+      const card = {
+        background: 'var(--dsw-alias-bg-overlay, #232326)',
+        border: '1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.22))',
+        boxShadow: '0 10px 30px rgba(0,0,0,.35)',
+        color: 'var(--dsw-alias-label-primary, #e6e6e6)',
+        font: 'inherit',
+        boxSizing: 'border-box',
+        pointerEvents: 'auto',
+      };
+
+      const children = [];
+      if (!state.active && anchors.toggle) {
+        children.push(
+          h(
+            'button',
+            {
+              key: 'toggle',
+              type: 'button',
+              'aria-label': translate('multi.label'),
+              title: translate('multi.label'),
+              onClick: () => multi.toggleActive(),
+              style: Object.assign({}, card, {
+                position: 'fixed',
+                left: anchors.toggle.left,
+                top: anchors.toggle.top,
+                width: anchors.toggle.width,
+                height: 24,
+                padding: '0 8px',
+                gap: 5,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                borderRadius: 8,
+                fontSize: 12,
+                lineHeight: '16px',
+                cursor: 'pointer',
+                zIndex: 61,
+              }),
+            },
+            multiIcon('checklist'),
+            h('span', { style: { whiteSpace: 'nowrap' } }, translate('multi.label')),
+          ),
+        );
+      }
+
+      if (state.active && anchors.bar) {
+        children.push(
+          h(
+            'div',
+            {
+              key: 'bar',
+              style: Object.assign({}, card, {
+                position: 'fixed',
+                left: anchors.bar.left,
+                width: anchors.bar.width,
+                bottom: anchors.bar.bottom,
+                borderRadius: 10,
+                padding: '8px 10px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                zIndex: 61,
+                fontSize: 12,
+              }),
+            },
+            h('span', { style: { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+              count > 0 ? translate('multi.selected').replace('{count}', String(count)) : translate('multi.none')),
+            h(
+              'button',
+              {
+                type: 'button',
+                disabled: busy,
+                onClick: () => multi.exit(),
+                style: {
+                  border: 0,
+                  background: 'transparent',
+                  color: 'var(--dsw-alias-label-secondary, #9a9a9a)',
+                  font: 'inherit',
+                  fontSize: 12,
+                  padding: '3px 6px',
+                  borderRadius: 6,
+                  cursor: 'pointer',
+                },
+              },
+              translate('multi.cancel'),
+            ),
+            h(
+              'button',
+              {
+                type: 'button',
+                disabled: busy || count === 0,
+                onClick: () => setConfirming(true),
+                style: {
+                  border: 0,
+                  borderRadius: 6,
+                  padding: '4px 10px',
+                  font: 'inherit',
+                  fontSize: 12,
+                  color: '#fff',
+                  background: 'var(--dsw-alias-state-error-primary, #e5484d)',
+                  opacity: busy || count === 0 ? 0.5 : 1,
+                  cursor: busy || count === 0 ? 'default' : 'pointer',
+                },
+              },
+              busy ? translate('multi.busy') : translate('multi.delete'),
+            ),
+          ),
+        );
+      }
+
+      if (confirming) {
+        children.push(
+          h(
+            'div',
+            {
+              key: 'confirm',
+              style: {
+                position: 'fixed',
+                inset: 0,
+                zIndex: 80,
+                background: 'rgba(0,0,0,.45)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                pointerEvents: 'auto',
+              },
+              onClick: (event) => {
+                if (event.target === event.currentTarget) setConfirming(false);
+              },
+            },
+            h(
+              'div',
+              {
+                style: Object.assign({}, card, {
+                  width: 320,
+                  maxWidth: 'calc(100vw - 40px)',
+                  borderRadius: 14,
+                  padding: '18px 18px 14px',
+                }),
+              },
+              h('div', { style: { fontSize: 14, fontWeight: 600, marginBottom: 8 } }, translate('multi.confirm.title')),
+              h('div', { style: { fontSize: 12.5, lineHeight: '19px', color: 'var(--dsw-alias-label-secondary, #b3b3b3)' } },
+                translate('multi.confirm.body').replace('{count}', String(count))),
+              errorText
+                ? h('div', { style: { fontSize: 12, color: 'var(--dsw-alias-state-error-primary, #e5484d)', marginTop: 8 } }, errorText)
+                : null,
+              h(
+                'div',
+                { style: { display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 } },
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    disabled: busy,
+                    onClick: () => setConfirming(false),
+                    style: {
+                      border: '1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.3))',
+                      background: 'transparent',
+                      color: 'inherit',
+                      font: 'inherit',
+                      fontSize: 12,
+                      padding: '6px 12px',
+                      borderRadius: 8,
+                      cursor: 'pointer',
+                    },
+                  },
+                  translate('multi.confirm.cancel'),
+                ),
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    disabled: busy,
+                    onClick: () => runDelete(),
+                    style: {
+                      border: 0,
+                      background: 'var(--dsw-alias-state-error-primary, #e5484d)',
+                      color: '#fff',
+                      font: 'inherit',
+                      fontSize: 12,
+                      padding: '6px 12px',
+                      borderRadius: 8,
+                      opacity: busy ? 0.6 : 1,
+                      cursor: busy ? 'progress' : 'pointer',
+                    },
+                  },
+                  busy ? translate('multi.busy') : translate('multi.confirm.confirm'),
+                ),
+              ),
+            ),
+          ),
+        );
+      }
+
+      return h(
+        'div',
+        { className: 'dsh-cm-multi-root', style: { position: 'fixed', inset: 0, zIndex: 60, pointerEvents: 'none' } },
+        children,
+      );
+    }
+
     const styles = {
       button: {
         display: 'flex',
@@ -446,24 +950,7 @@ window.__ModuleLoader__.load({
           else dismissMenu();
           try {
             if (effect) await effect.done;
-            const response = await fetch(new URL(ROUTE, document.baseURI), {
-              method: 'POST',
-              credentials: 'same-origin',
-              headers: { 'content-type': 'application/json', [ACTION_HEADER]: '1' },
-              body: JSON.stringify({
-                sessionId,
-                title: typeof props.displayTitle === 'string' ? props.displayTitle : '',
-              }),
-            });
-            let payload;
-            try {
-              payload = await response.json();
-            } catch {
-              payload = undefined;
-            }
-            if (!response.ok || !payload || payload.ok !== true) {
-              throw new Error((payload && (payload.message || payload.error)) || `HTTP ${response.status}`);
-            }
+            await requestDelete(sessionId);
             setPhase('done');
             dismissMenu();
           } catch (error) {
@@ -570,6 +1057,30 @@ window.__ModuleLoader__.load({
         track(() =>
           ctx.slots.inject(SLOT, () =>
             ctx.slots.register({ name: SLOT, id: 'dsh-conversation-manager.delete', order: 500 }, Row),
+          ),
+        );
+
+        // Multi-select: row circles + click interception live on the document,
+        // the toggle / delete bar / confirmation dialog render in the overlay.
+        const multi = createMultiSelect();
+        track(() => installMultiSelectDom(multi));
+        track(() => {
+          if (typeof document === 'undefined') return () => {};
+          const style = document.createElement('style');
+          style.setAttribute('data-dsh-conversation-manager', 'multi-select');
+          style.textContent = MULTI_CSS;
+          document.head.appendChild(style);
+          return () => style.remove();
+        });
+
+        const Overlay = (props) =>
+          h(MultiSelectOverlay, Object.assign({}, props, { multi, translate, requestDelete }));
+        track(() =>
+          ctx.slots.inject('shell.overlay', () =>
+            ctx.slots.register(
+              { name: 'shell.overlay', id: 'dsh-conversation-manager.multi-select', order: 900 },
+              Overlay,
+            ),
           ),
         );
       },
