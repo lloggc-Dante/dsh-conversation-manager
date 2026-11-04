@@ -38,6 +38,143 @@ window.__ModuleLoader__.load({
     // workspace snapshot) before falling back to a full page reload.
     const LIVE_UPDATE_GRACE_MS = 1600;
 
+    // v1 removal choreography (milliseconds): a strike line sweeps left→right,
+    // then the row grays out, sinks and flies off to the left.
+    const STRIKE_MS = 420;
+    const SINK_MS = 720;
+    const REMOVAL_MS = STRIKE_MS + SINK_MS + 40;
+    const OWN_ROW_SELECTOR = '[data-dsh-conversation-manager="delete"]';
+
+    /** Is this element shaped like one Session row of the sidebar list? */
+    function looksLikeSessionRow(element) {
+      if (!element || element.querySelector(OWN_ROW_SELECTOR)) return false;
+      const rect = element.getBoundingClientRect();
+      return rect.height >= 22 && rect.height <= 64 && rect.width >= 140;
+    }
+
+    /** Walk up from `element` to the nearest ancestor that reads as a Session row. */
+    function closestSessionRow(element, displayTitle) {
+      let node = element;
+      for (let depth = 0; depth < 6 && node; depth += 1) {
+        if (looksLikeSessionRow(node)) {
+          if (!displayTitle) return node;
+          const text = (node.textContent || '').replace(/\s+/g, ' ').trim();
+          if (text.indexOf(displayTitle) !== -1) return node;
+        }
+        node = node.parentElement;
+      }
+      return null;
+    }
+
+    /**
+     * Locate the sidebar row this menu belongs to. The row belongs to the Host's own
+     * list, so it is found from the live DOM: first through the open "..." trigger
+     * (it carries aria-expanded), then by the row title itself.
+     */
+    function findSessionRow(displayTitle) {
+      if (typeof document === 'undefined') return null;
+      const title = typeof displayTitle === 'string' ? displayTitle.replace(/\s+/g, ' ').trim() : '';
+      const triggers = document.querySelectorAll('[aria-expanded="true"]');
+      for (const trigger of triggers) {
+        const row = closestSessionRow(trigger.parentElement, title);
+        if (row) return row;
+      }
+      if (!title) return null;
+      const nodes = document.querySelectorAll('span, div, a, button, p');
+      let match = null;
+      for (const node of nodes) {
+        if (node.children.length > 0) continue;
+        if (node.querySelector(OWN_ROW_SELECTOR)) continue;
+        if ((node.textContent || '').replace(/\s+/g, ' ').trim() !== title) continue;
+        match = node;
+      }
+      if (!match) return null;
+      return closestSessionRow(match, title) || match.parentElement;
+    }
+
+    /**
+     * Play the v1 removal choreography on the row itself, before the Host drops it.
+     * `done` settles when the choreography finishes; `restore` puts the row back
+     * when the delete turns out to have failed.
+     */
+    function startRemovalAnimation(row) {
+      const media = typeof window !== 'undefined' && window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
+      const reduced = Boolean(media && media.matches);
+      const previous = { position: row.style.position, overflow: row.style.overflow, pointerEvents: row.style.pointerEvents };
+      const animations = [];
+      let line = null;
+      if (!reduced) {
+        try {
+          row.style.position = 'relative';
+          row.style.overflow = 'hidden';
+          row.style.pointerEvents = 'none';
+          line = document.createElement('span');
+          line.setAttribute('aria-hidden', 'true');
+          Object.assign(line.style, {
+            position: 'absolute',
+            left: '0',
+            top: '50%',
+            width: '100%',
+            height: '2px',
+            borderRadius: '2px',
+            pointerEvents: 'none',
+            zIndex: '3',
+            background:
+              'linear-gradient(90deg, rgba(229,72,77,0), var(--dsw-alias-state-error-primary, #e5484d) 70%, #ff8a8d)',
+            transform: 'scaleX(0)',
+            transformOrigin: 'left center',
+          });
+          row.appendChild(line);
+          if (typeof line.animate === 'function') {
+            animations.push(
+              line.animate([{ transform: 'scaleX(0)' }, { transform: 'scaleX(1)' }], {
+                duration: STRIKE_MS,
+                easing: 'cubic-bezier(0.65, 0, 0.35, 1)',
+                fill: 'forwards',
+              }),
+            );
+          }
+          if (typeof row.animate === 'function') {
+            animations.push(
+              row.animate(
+                [
+                  { filter: 'grayscale(0)', transform: 'translate3d(0, 0, 0) scale(1)', opacity: 1, offset: 0 },
+                  { filter: 'grayscale(1)', transform: 'translate3d(0, 7px, 0) scale(0.985)', opacity: 0.85, offset: 0.5 },
+                  { filter: 'grayscale(1)', transform: 'translate3d(-125%, 12px, 0) scale(0.95)', opacity: 0, offset: 1 },
+                ],
+                { duration: SINK_MS, delay: STRIKE_MS, easing: 'cubic-bezier(0.45, 0, 0.25, 1)', fill: 'forwards' },
+              ),
+            );
+          }
+        } catch {
+          /* the animation is a nicety: never let it block the delete */
+        }
+      }
+      const done = new Promise((resolve) => {
+        if (reduced || animations.length === 0) {
+          resolve();
+          return;
+        }
+        window.setTimeout(resolve, REMOVAL_MS);
+      });
+      return {
+        done,
+        restore() {
+          for (const animation of animations) {
+            try {
+              animation.cancel();
+            } catch {
+              /* already finished */
+            }
+          }
+          if (line && line.parentNode) line.parentNode.removeChild(line);
+          row.style.position = previous.position;
+          row.style.overflow = previous.overflow;
+          row.style.pointerEvents = previous.pointerEvents;
+        },
+      };
+    }
+
     /**
      * Ask the slot's live Workspace snapshot whether this Session is still listed
      * anywhere (workspace rows, archive set, pin set). A boolean selector keeps the
@@ -187,7 +324,18 @@ window.__ModuleLoader__.load({
           }
           setPhase('busy');
           setErrorText('');
+          // v1: play the removal choreography on the sidebar row first, then ask the
+          // Host to delete. Animating in place only works while the row is still
+          // mounted, so the POST waits for the effect to settle.
+          const title = typeof props.displayTitle === 'string' ? props.displayTitle : '';
+          const row = findSessionRow(title);
+          const effect = row ? startRemovalAnimation(row) : null;
+          // Clear the menu once the strike has landed, so the exit animation is not
+          // hidden behind the popup.
+          if (effect) window.setTimeout(dismissMenu, STRIKE_MS);
+          else dismissMenu();
           try {
+            if (effect) await effect.done;
             const response = await fetch(new URL(ROUTE, document.baseURI), {
               method: 'POST',
               credentials: 'same-origin',
@@ -209,6 +357,13 @@ window.__ModuleLoader__.load({
             setPhase('done');
             dismissMenu();
           } catch (error) {
+            if (effect) {
+              try {
+                effect.restore();
+              } catch {
+                /* row already gone */
+              }
+            }
             setPhase('error');
             setErrorText(error && error.message ? error.message : translate('error.empty'));
             try {
