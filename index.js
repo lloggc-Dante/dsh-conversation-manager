@@ -269,6 +269,24 @@ async function hideSession(ctx, sessionId) {
   }
 }
 
+/**
+ * Tell every open page that this Session is gone. `api-session/removed` is a
+ * forwarded Host event (`dsh-api-remotes` allowlist) and the session client
+ * applies it as a row removal, so the sidebar drops the row without a reload and
+ * without leaving an "archived" marker behind.
+ */
+function announceRemoval(ctx, sessionId) {
+  try {
+    if (typeof ctx.emit !== 'function') return false;
+    ctx.emit('api-session/removed', sessionId);
+    return true;
+  } catch (error) {
+    warn('announceRemoval failed', sessionId, textOf(error));
+    return false;
+  }
+}
+
+/** `api-session/removed` relay bookkeeping for the boot sweep. */
 const journalPath = () => path.join(dshHome(), 'storages', 'conversation-manager', 'archived.json');
 
 async function readJournal() {
@@ -393,7 +411,6 @@ async function handleDelete(ctx, request) {
       throw error;
     }
     const cleanup = await forgetInRegistry(ctx, sessionId);
-    if (hidden) await writeJournal([...(await readJournal()), sessionId]);
     // A still-live container can recreate the store right after removal; sweep
     // once more so "deleted" is not undone by a late flush.
     let swept = 0;
@@ -409,6 +426,21 @@ async function handleDelete(ctx, request) {
         break;
       }
     }
+    // Drop the row from every open page, then clear the hiding marker so the
+    // conversation is not left sitting in the archived view.
+    const announced = announceRemoval(ctx, sessionId);
+    let archived = hidden;
+    if (hidden && announced) {
+      // Let the removal reach the page before the archive set changes again.
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      try {
+        await service(ctx, 'workspaceRegistry')?.unarchiveSession?.(sessionId);
+        archived = false;
+      } catch (error) {
+        warn('clearing archive marker failed', sessionId, textOf(error));
+      }
+    }
+    if (archived) await writeJournal([...(await readJournal()), sessionId]);
     return json(200, {
       ok: true,
       sessionId,
@@ -417,6 +449,8 @@ async function handleDelete(ctx, request) {
       swept,
       detached: cleanup.detached,
       hidden,
+      archived,
+      announced,
     });
   } catch (error) {
     warn('delete failed', sessionId, textOf(error));
