@@ -38,11 +38,15 @@ window.__ModuleLoader__.load({
     // workspace snapshot) before falling back to a full page reload.
     const LIVE_UPDATE_GRACE_MS = 1600;
 
-    // v1 removal choreography (milliseconds): a strike line sweeps left→right,
-    // then the row grays out, sinks and flies off to the left.
-    const STRIKE_MS = 420;
-    const SINK_MS = 720;
-    const REMOVAL_MS = STRIKE_MS + SINK_MS + 40;
+    // v1 removal choreography (milliseconds): a strike line sweeps left→right over
+    // the Session title, the row rests a beat, then grays out, sinks, and flies off
+    // to the left. Deliberately slow: the whole exit is meant to be watched.
+    const STRIKE_MS = 650;
+    const HOLD_MS = 160;
+    const SINK_MS = 420;
+    const REST_MS = 200;
+    const FLY_MS = 640;
+    const REMOVAL_MS = STRIKE_MS + HOLD_MS + SINK_MS + REST_MS + FLY_MS;
     const OWN_ROW_SELECTOR = '[data-dsh-conversation-manager="delete"]';
 
     /** Is this element shaped like one Session row of the sidebar list? */
@@ -92,31 +96,76 @@ window.__ModuleLoader__.load({
       return closestSessionRow(match, title) || match.parentElement;
     }
 
-    /** The leaf element inside the row that renders the Session title. */
+    /**
+     * The leaf element inside the row that renders the Session title. Rows often
+     * carry a trailing relative time in the same text run, so a containing (but
+     * tightest) match is accepted too.
+     */
     function findTitleElement(row, displayTitle) {
       const title = typeof displayTitle === 'string' ? displayTitle.replace(/\s+/g, ' ').trim() : '';
       if (!title || typeof row.querySelectorAll !== 'function') return null;
       const nodes = row.querySelectorAll('span, div, p, a, button');
-      let match = null;
+      let exact = null;
+      let containing = null;
       for (const node of nodes) {
         if (node === row) continue;
         if (node.children && node.children.length > 0) continue;
-        if ((node.textContent || '').replace(/\s+/g, ' ').trim() !== title) continue;
-        match = node;
+        const text = (node.textContent || '').replace(/\s+/g, ' ').trim();
+        if (text === title) exact = node;
+        else if (!containing && text.indexOf(title) !== -1) containing = node;
       }
-      return match;
+      return exact || containing;
+    }
+
+    /** The first text node below `element` that contains `title`. */
+    function firstTextRun(element, title) {
+      const stack = [element];
+      while (stack.length > 0) {
+        const node = stack.pop();
+        if (!node) continue;
+        if (node.nodeType === 3) {
+          const value = node.nodeValue || '';
+          const index = value.replace(/\s+/g, ' ').indexOf(title);
+          if (index !== -1) return { node, index, length: title.length };
+          continue;
+        }
+        const children = node.childNodes;
+        if (children) {
+          for (let index = children.length - 1; index >= 0; index -= 1) stack.push(children[index]);
+        }
+      }
+      return null;
     }
 
     /**
      * Where the strike line goes: across the title text itself (a pen stroke over
      * the label), falling back to the whole row when the title cannot be measured.
      */
-    function strikePlacement(row, titleElement) {
+    function strikePlacement(row, titleElement, displayTitle) {
       if (!titleElement || typeof titleElement.getBoundingClientRect !== 'function') return null;
+      const title = typeof displayTitle === 'string' ? displayTitle.replace(/\s+/g, ' ').trim() : '';
       try {
         const rowRect = row.getBoundingClientRect();
-        const titleRect = titleElement.getBoundingClientRect();
-        if (!(titleRect.width > 0) || !(titleRect.height > 0)) return null;
+        let titleRect = null;
+        // Exact text-run measurement: only the title characters get struck, even
+        // when the row also renders a relative timestamp next to it.
+        if (title && typeof document !== 'undefined' && typeof document.createRange === 'function') {
+          const run = firstTextRun(titleElement, title);
+          if (run) {
+            try {
+              const range = document.createRange();
+              range.setStart(run.node, run.index);
+              range.setEnd(run.node, run.index + run.length);
+              const measured = range.getBoundingClientRect();
+              if (measured && measured.width > 0) titleRect = measured;
+              range.detach && range.detach();
+            } catch {
+              titleRect = null;
+            }
+          }
+        }
+        if (!titleRect) titleRect = titleElement.getBoundingClientRect();
+        if (!titleRect || !(titleRect.width > 0) || !(titleRect.height > 0)) return null;
         return {
           left: titleRect.left - rowRect.left,
           top: titleRect.top - rowRect.top + titleRect.height / 2 - 1,
@@ -144,20 +193,23 @@ window.__ModuleLoader__.load({
           row.style.overflow = 'hidden';
           row.style.pointerEvents = 'none';
           // Strike the title text, like crossing the words out with a pen.
-          const placement = strikePlacement(row, findTitleElement(row, displayTitle));
+          const placement = strikePlacement(row, findTitleElement(row, displayTitle), displayTitle);
           line = document.createElement('span');
           line.setAttribute('aria-hidden', 'true');
+          // A pen stroke leaves a little overshoot on both ends of the word.
+          const overshoot = 4;
           Object.assign(line.style, {
             position: 'absolute',
-            left: placement ? `${placement.left}px` : '8px',
+            left: placement ? `${Math.max(0, placement.left - overshoot)}px` : '8px',
             top: placement ? `${placement.top}px` : '50%',
-            width: placement ? `${placement.width}px` : 'calc(100% - 16px)',
+            width: placement ? `${placement.width + overshoot * 2}px` : 'calc(100% - 16px)',
             height: '2px',
             borderRadius: '2px',
             pointerEvents: 'none',
             zIndex: '3',
             background:
-              'linear-gradient(90deg, rgba(229,72,77,0), var(--dsw-alias-state-error-primary, #e5484d) 70%, #ff8a8d)',
+              'linear-gradient(90deg, rgba(229,72,77,0.35), var(--dsw-alias-state-error-primary, #e5484d) 18%, #ff8a8d)',
+            boxShadow: '0 0 6px rgba(229,72,77,0.35)',
             transform: 'scaleX(0)',
             transformOrigin: 'left center',
           });
@@ -172,14 +224,23 @@ window.__ModuleLoader__.load({
             );
           }
           if (typeof row.animate === 'function') {
+            const exitTotal = SINK_MS + REST_MS + FLY_MS;
+            const sinkEnd = SINK_MS / exitTotal;
+            const restEnd = (SINK_MS + REST_MS) / exitTotal;
             animations.push(
               row.animate(
                 [
                   { filter: 'grayscale(0)', transform: 'translate3d(0, 0, 0) scale(1)', opacity: 1, offset: 0 },
-                  { filter: 'grayscale(1)', transform: 'translate3d(0, 7px, 0) scale(0.985)', opacity: 0.85, offset: 0.5 },
-                  { filter: 'grayscale(1)', transform: 'translate3d(-125%, 12px, 0) scale(0.95)', opacity: 0, offset: 1 },
+                  { filter: 'grayscale(1)', transform: 'translate3d(0, 9px, 0) scale(0.985)', opacity: 1, offset: sinkEnd },
+                  { filter: 'grayscale(1)', transform: 'translate3d(0, 10px, 0) scale(0.985)', opacity: 0.98, offset: restEnd },
+                  { filter: 'grayscale(1)', transform: 'translate3d(-120%, 18px, 0) scale(0.96)', opacity: 0, offset: 1 },
                 ],
-                { duration: SINK_MS, delay: STRIKE_MS, easing: 'cubic-bezier(0.45, 0, 0.25, 1)', fill: 'forwards' },
+                {
+                  duration: exitTotal,
+                  delay: STRIKE_MS + HOLD_MS,
+                  easing: 'cubic-bezier(0.4, 0, 0.2, 1)',
+                  fill: 'forwards',
+                },
               ),
             );
           }
