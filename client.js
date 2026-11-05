@@ -401,7 +401,7 @@ html.dsh-cm-multi [data-row-key^="session:"] > span:first-child > * { visibility
 html.dsh-cm-multi [data-row-key^="session:"] > span:first-child::before {
   content: ""; position: absolute; left: 50%; top: 50%; width: 14px; height: 14px;
   margin: -7px 0 0 -7px; box-sizing: border-box; border-radius: 50%;
-  border: 1.5px solid var(--dsw-alias-label-secondary, #8a8f98);
+  border: 1px solid var(--dsw-alias-label-secondary, #8a8f98);
   background: transparent; pointer-events: none; z-index: 2;
 }
 html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] > span:first-child::after {
@@ -1152,4 +1152,5 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
     };
   },
 });
+
 
