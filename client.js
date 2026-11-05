@@ -408,6 +408,58 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected]::before {
   border-color: var(--dsw-alias-brand-primary, #4d6bfe);
 }
 html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background: var(--dsw-alias-bg-layer-2, rgba(127,127,127,.12)); }
+
+.dsh-cm-toggle {
+  position: fixed; display: flex; align-items: center; justify-content: center; gap: 5px;
+  height: 26px; padding: 0 10px; box-sizing: border-box; cursor: pointer; z-index: 61;
+  border: .5px solid var(--dsw-alias-border-l3, var(--dsw-alias-border-l1, rgba(127,127,127,.28)));
+  border-radius: var(--dsw-radius-md, 10px);
+  background: var(--dsw-alias-button-elevated-fill, transparent);
+  color: var(--dsw-alias-label-primary, #e6e6e6);
+  font: inherit; font-size: 12px; line-height: 16px; font-weight: 500;
+  box-shadow: none; outline: none;
+}
+.dsh-cm-toggle:hover { background: var(--dsw-alias-button-floating-hover, var(--dsw-alias-bg-layer-2, rgba(127,127,127,.14))); }
+
+.dsh-cm-bar {
+  position: fixed; display: flex; align-items: center; gap: 8px; padding: 8px 10px; box-sizing: border-box;
+  z-index: 61; border: .5px solid var(--dsw-alias-border-l3, var(--dsw-alias-border-l1, rgba(127,127,127,.24)));
+  border-radius: var(--dsw-radius-md, 10px);
+  background: var(--dsw-alias-bg-layer-1, var(--dsw-alias-bg-overlay, #232326));
+  color: var(--dsw-alias-label-primary, #e6e6e6);
+  font: inherit; font-size: 12px; box-shadow: none;
+}
+.dsh-cm-ghost {
+  border: .5px solid var(--dsw-alias-border-l3, var(--dsw-alias-border-l1, rgba(127,127,127,.32)));
+  background: transparent; color: inherit; font: inherit; font-size: 12px;
+  padding: 5px 10px; border-radius: 8px; cursor: pointer;
+}
+.dsh-cm-ghost:hover { background: var(--dsw-alias-button-floating-hover, rgba(127,127,127,.12)); }
+.dsh-cm-danger {
+  border: 0; border-radius: 8px; padding: 5px 12px; font: inherit; font-size: 12px; font-weight: 500;
+  color: #fff; background: var(--dsw-alias-state-error-primary, #e5484d); cursor: pointer;
+}
+.dsh-cm-danger:disabled { opacity: .5; cursor: default; }
+
+.dsh-cm-modal-frame {
+  position: fixed; inset: 0; z-index: 80; display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, .38);
+}
+.dsh-cm-modal {
+  width: 360px; max-width: calc(100vw - 48px); box-sizing: border-box; padding: 20px;
+  border-radius: 16px;
+  border: .5px solid var(--dsw-alias-border-l3, var(--dsw-alias-border-l1, rgba(127,127,127,.2)));
+  background: var(--dsw-alias-bg-overlay, #232326);
+  color: var(--dsw-alias-label-primary, #e6e6e6);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .28);
+  font: inherit;
+}
+.dsh-cm-modal-title { margin: 0 0 8px; font-size: 16px; font-weight: 600; line-height: 22px; }
+.dsh-cm-modal-body { font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-secondary, #a3a3a3); }
+.dsh-cm-modal-error { margin-top: 8px; font-size: 12px; color: var(--dsw-alias-state-error-primary, #e5484d); }
+.dsh-cm-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.dsh-cm-modal-actions .dsh-cm-ghost, .dsh-cm-modal-actions .dsh-cm-danger { padding: 7px 14px; font-size: 13px; border-radius: 10px; }
+.dsh-cm-multi-root > * { pointer-events: auto; }
 `;
 
     function createMultiSelect() {
@@ -606,23 +658,46 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
 
       React.useEffect(() => {
         let alive = true;
+        let frame = 0;
         const update = () => {
           if (!alive) return;
           const next = measureAnchors();
           setAnchors((previous) => (sameAnchors(previous, next) ? previous : next));
         };
+        const schedule = () => {
+          if (frame || !alive) return;
+          frame = window.requestAnimationFrame(() => {
+            frame = 0;
+            update();
+          });
+        };
         update();
-        const timer = window.setInterval(update, 400);
-        window.addEventListener('resize', update);
+        // Search expands/collapses on click, the sidebar collapses on click, and a
+        // window resize moves both: refresh on the next frame instead of waiting for
+        // a poll, so the toggle never floats over a changed layout.
+        const timer = window.setInterval(update, 250);
+        const onPointerDown = () => {
+          schedule();
+          window.setTimeout(update, 90);
+          window.setTimeout(update, 260);
+        };
+        const onFocusIn = onPointerDown;
+        window.addEventListener('resize', schedule);
+        document.addEventListener('pointerdown', onPointerDown, true);
+        document.addEventListener('focusin', onFocusIn, true);
+        window.addEventListener('scroll', schedule, true);
         return () => {
           alive = false;
           window.clearInterval(timer);
-          window.removeEventListener('resize', update);
+          window.removeEventListener('resize', schedule);
+          document.removeEventListener('pointerdown', onPointerDown, true);
+          document.removeEventListener('focusin', onFocusIn, true);
+          window.removeEventListener('scroll', schedule, true);
+          if (frame) window.cancelAnimationFrame(frame);
         };
       }, []);
 
       const count = state.selected.size;
-      const selectedIds = React.useMemo(() => [...state.selected], [state.selected]);
 
       const runDelete = React.useCallback(async () => {
         if (busy) return;
@@ -650,16 +725,6 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
         }
       }, [busy, multi, requestDelete, translate]);
 
-      const card = {
-        background: 'var(--dsw-alias-bg-overlay, #232326)',
-        border: '1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.22))',
-        boxShadow: '0 10px 30px rgba(0,0,0,.35)',
-        color: 'var(--dsw-alias-label-primary, #e6e6e6)',
-        font: 'inherit',
-        boxSizing: 'border-box',
-        pointerEvents: 'auto',
-      };
-
       const children = [];
       if (!state.active && anchors.toggle) {
         children.push(
@@ -668,26 +733,11 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
             {
               key: 'toggle',
               type: 'button',
+              className: 'dsh-cm-toggle',
               'aria-label': translate('multi.label'),
               title: translate('multi.label'),
               onClick: () => multi.toggleActive(),
-              style: Object.assign({}, card, {
-                position: 'fixed',
-                left: anchors.toggle.left,
-                top: anchors.toggle.top,
-                width: anchors.toggle.width,
-                height: 24,
-                padding: '0 8px',
-                gap: 5,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                borderRadius: 8,
-                fontSize: 12,
-                lineHeight: '16px',
-                cursor: 'pointer',
-                zIndex: 61,
-              }),
+              style: { left: anchors.toggle.left, top: anchors.toggle.top, width: anchors.toggle.width },
             },
             multiIcon('checklist'),
             h('span', { style: { whiteSpace: 'nowrap' } }, translate('multi.label')),
@@ -701,19 +751,8 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
             'div',
             {
               key: 'bar',
-              style: Object.assign({}, card, {
-                position: 'fixed',
-                left: anchors.bar.left,
-                width: anchors.bar.width,
-                bottom: anchors.bar.bottom,
-                borderRadius: 10,
-                padding: '8px 10px',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                zIndex: 61,
-                fontSize: 12,
-              }),
+              className: 'dsh-cm-bar',
+              style: { left: anchors.bar.left, width: anchors.bar.width, bottom: anchors.bar.bottom },
             },
             h('span', { style: { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
               count > 0 ? translate('multi.selected').replace('{count}', String(count)) : translate('multi.none')),
@@ -721,18 +760,9 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
               'button',
               {
                 type: 'button',
+                className: 'dsh-cm-ghost',
                 disabled: busy,
                 onClick: () => multi.exit(),
-                style: {
-                  border: 0,
-                  background: 'transparent',
-                  color: 'var(--dsw-alias-label-secondary, #9a9a9a)',
-                  font: 'inherit',
-                  fontSize: 12,
-                  padding: '3px 6px',
-                  borderRadius: 6,
-                  cursor: 'pointer',
-                },
               },
               translate('multi.cancel'),
             ),
@@ -740,19 +770,9 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
               'button',
               {
                 type: 'button',
+                className: 'dsh-cm-danger',
                 disabled: busy || count === 0,
                 onClick: () => setConfirming(true),
-                style: {
-                  border: 0,
-                  borderRadius: 6,
-                  padding: '4px 10px',
-                  font: 'inherit',
-                  fontSize: 12,
-                  color: '#fff',
-                  background: 'var(--dsw-alias-state-error-primary, #e5484d)',
-                  opacity: busy || count === 0 ? 0.5 : 1,
-                  cursor: busy || count === 0 ? 'default' : 'pointer',
-                },
               },
               busy ? translate('multi.busy') : translate('multi.delete'),
             ),
@@ -766,55 +786,30 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
             'div',
             {
               key: 'confirm',
-              style: {
-                position: 'fixed',
-                inset: 0,
-                zIndex: 80,
-                background: 'rgba(0,0,0,.45)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                pointerEvents: 'auto',
-              },
+              className: 'dsh-cm-modal-frame',
               onClick: (event) => {
                 if (event.target === event.currentTarget) setConfirming(false);
               },
             },
             h(
               'div',
-              {
-                style: Object.assign({}, card, {
-                  width: 320,
-                  maxWidth: 'calc(100vw - 40px)',
-                  borderRadius: 14,
-                  padding: '18px 18px 14px',
-                }),
-              },
-              h('div', { style: { fontSize: 14, fontWeight: 600, marginBottom: 8 } }, translate('multi.confirm.title')),
-              h('div', { style: { fontSize: 12.5, lineHeight: '19px', color: 'var(--dsw-alias-label-secondary, #b3b3b3)' } },
+              { className: 'dsh-cm-modal', role: 'dialog', 'aria-modal': 'true' },
+              h('div', { className: 'dsh-cm-modal-title' }, translate('multi.confirm.title')),
+              h('div', { className: 'dsh-cm-modal-body' },
                 translate('multi.confirm.body').replace('{count}', String(count))),
               errorText
-                ? h('div', { style: { fontSize: 12, color: 'var(--dsw-alias-state-error-primary, #e5484d)', marginTop: 8 } }, errorText)
+                ? h('div', { className: 'dsh-cm-modal-error' }, errorText)
                 : null,
               h(
                 'div',
-                { style: { display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 } },
+                { className: 'dsh-cm-modal-actions' },
                 h(
                   'button',
                   {
                     type: 'button',
+                    className: 'dsh-cm-ghost',
                     disabled: busy,
                     onClick: () => setConfirming(false),
-                    style: {
-                      border: '1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.3))',
-                      background: 'transparent',
-                      color: 'inherit',
-                      font: 'inherit',
-                      fontSize: 12,
-                      padding: '6px 12px',
-                      borderRadius: 8,
-                      cursor: 'pointer',
-                    },
                   },
                   translate('multi.confirm.cancel'),
                 ),
@@ -822,19 +817,9 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
                   'button',
                   {
                     type: 'button',
+                    className: 'dsh-cm-danger',
                     disabled: busy,
                     onClick: () => runDelete(),
-                    style: {
-                      border: 0,
-                      background: 'var(--dsw-alias-state-error-primary, #e5484d)',
-                      color: '#fff',
-                      font: 'inherit',
-                      fontSize: 12,
-                      padding: '6px 12px',
-                      borderRadius: 8,
-                      opacity: busy ? 0.6 : 1,
-                      cursor: busy ? 'progress' : 'pointer',
-                    },
                   },
                   busy ? translate('multi.busy') : translate('multi.confirm.confirm'),
                 ),
