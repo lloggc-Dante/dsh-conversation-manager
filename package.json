@@ -1,6 +1,6 @@
 {
   "name": "dsh-conversation-manager",
-  "version": "1.4.5",
+  "version": "1.4.6",
   "private": true,
   "description": "Delete unwanted conversations straight from the sidebar session menu, including their on-disk session store.",
   "type": "module",
