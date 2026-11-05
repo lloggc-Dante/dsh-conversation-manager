@@ -659,12 +659,13 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
     const sameAnchors = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
     function multiIcon(kind) {
-      // Square-check line icon at the same weight as the neighbouring header icons.
+      // Square-check, drawn on the native 24px grid with stroke-width 1.5 so the
+      // 16px rendering lands on the same ~1px optical weight as the host icons.
       return h(
         'svg',
-        { viewBox: '0 0 16 16', width: 16, height: 16, fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': 'true' },
-        h('path', { d: 'M13.4 8.2v3.5a1.6 1.6 0 0 1-1.6 1.6H4.2a1.6 1.6 0 0 1-1.6-1.6V4.1a1.6 1.6 0 0 1 1.6-1.6h5.4' }),
-        h('path', { d: 'M6 6.9l2 2 4.6-4.6' }),
+        { viewBox: '0 0 24 24', width: 16, height: 16, fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': 'true' },
+        h('path', { d: 'M21 10.6V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h12.5' }),
+        h('path', { d: 'm9 11 3 3L22 4' }),
       );
     }
 
