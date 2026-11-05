@@ -395,17 +395,19 @@ window.__ModuleLoader__.load({
      * ---------------------------------------------------------------------- */
 
     const MULTI_CSS = `
-html.dsh-cm-multi [data-row-key^="session:"] { position: relative; }
-html.dsh-cm-multi [data-row-key^="session:"] > span:first-child { visibility: hidden; }
-html.dsh-cm-multi [data-row-key^="session:"]::before {
-  content: ""; position: absolute; left: 4px; top: 50%; width: 12px; height: 12px;
-  margin-top: -6px; box-sizing: border-box; border-radius: 50%;
+html.dsh-cm-multi [data-row-key^="session:"] > span:first-child { position: relative; }
+html.dsh-cm-multi [data-row-key^="session:"] > span:first-child > * { visibility: hidden; }
+/* The ring lives in the row's leading cell, so it lines up with the folder icons. */
+html.dsh-cm-multi [data-row-key^="session:"] > span:first-child::before {
+  content: ""; position: absolute; left: 50%; top: 50%; width: 14px; height: 14px;
+  margin: -7px 0 0 -7px; box-sizing: border-box; border-radius: 50%;
   border: 1.5px solid var(--dsw-alias-label-secondary, #8a8f98);
   background: transparent; pointer-events: none; z-index: 2;
 }
-html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected]::before {
-  background: var(--dsw-alias-brand-primary, #4d6bfe);
-  border-color: var(--dsw-alias-brand-primary, #4d6bfe);
+html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] > span:first-child::after {
+  content: ""; position: absolute; left: 50%; top: 50%; width: 7px; height: 7px;
+  margin: -3.5px 0 0 -3.5px; box-sizing: border-box; border-radius: 50%;
+  background: #7AAAFF; pointer-events: none; z-index: 2;
 }
 html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background: var(--dsw-alias-bg-layer-2, rgba(127,127,127,.12)); }
 
@@ -1150,3 +1152,4 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
     };
   },
 });
+
