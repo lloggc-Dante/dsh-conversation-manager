@@ -526,6 +526,25 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
       return value.startsWith(ROW_KEY_PREFIX) ? value.slice(ROW_KEY_PREFIX.length) : '';
     };
 
+    /** The sidebar row element currently showing one Session, if any. */
+    function findRowElement(sessionId) {
+      if (typeof document === 'undefined') return null;
+      for (const row of document.querySelectorAll('[data-row-key^="session:"]')) {
+        if (rowSessionId(row) === sessionId) return row;
+      }
+      return null;
+    }
+
+    /** The row's rendered title text (children: slot, title, status, actions). */
+    function rowTitleText(row) {
+      try {
+        const title = row.children && row.children[1];
+        return title && typeof title.textContent === 'string' ? title.textContent.replace(/\s+/g, ' ').trim() : '';
+      } catch {
+        return '';
+      }
+    }
+
     /** Wire the mode into the shipped row DOM: circles, click interception, Escape. */
     function installMultiSelectDom(multi) {
       if (typeof document === 'undefined') return () => {};
@@ -640,22 +659,12 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
     const sameAnchors = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
     function multiIcon(kind) {
-      if (kind === 'check') {
-        return h(
-          'svg',
-          { viewBox: '0 0 16 16', width: 16, height: 16, fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': 'true' },
-          h('path', { d: 'M3 4.5l1.6 1.6L7.4 3' }),
-          h('path', { d: 'M3 10.5l1.6 1.6L7.4 9' }),
-          h('path', { d: 'M9.2 5h4' }),
-          h('path', { d: 'M9.2 11h4' }),
-        );
-      }
+      // Square-check line icon at the same weight as the neighbouring header icons.
       return h(
         'svg',
         { viewBox: '0 0 16 16', width: 16, height: 16, fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': 'true' },
-        h('path', { d: 'M2.5 4.5h11' }),
-        h('path', { d: 'M2.5 8h11' }),
-        h('path', { d: 'M2.5 11.5h11' }),
+        h('path', { d: 'M13.4 8.2v3.5a1.6 1.6 0 0 1-1.6 1.6H4.2a1.6 1.6 0 0 1-1.6-1.6V4.1a1.6 1.6 0 0 1 1.6-1.6h5.4' }),
+        h('path', { d: 'M6 6.9l2 2 4.6-4.6' }),
       );
     }
 
@@ -672,7 +681,8 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
       const hoverTimer = React.useRef(0);
       React.useEffect(() => () => window.clearTimeout(hoverTimer.current), []);
       React.useEffect(() => {
-        if (state.active) setTooltip(false);
+        window.clearTimeout(hoverTimer.current);
+        setTooltip(false);
       }, [state.active]);
 
       React.useEffect(() => {
@@ -724,12 +734,33 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
         if (ids.length === 0) return;
         setBusy(true);
         setErrorText('');
+        // Play the same strike-out choreography on every selected row before the
+        // Host is asked to delete them, so multi-delete looks like one delete.
+        const effects = new Map();
+        for (const id of ids) {
+          const row = findRowElement(id);
+          if (!row) continue;
+          try {
+            effects.set(id, startRemovalAnimation(row, rowTitleText(row)));
+          } catch {
+            /* the animation is optional */
+          }
+        }
+        if (effects.size > 0) await new Promise((resolve) => window.setTimeout(resolve, REMOVAL_MS));
         const failures = [];
         for (const id of ids) {
           try {
             await requestDelete(id);
           } catch (error) {
             failures.push(error && error.message ? error.message : String(error));
+            const effect = effects.get(id);
+            if (effect) {
+              try {
+                effect.restore();
+              } catch {
+                /* row already gone */
+              }
+            }
           }
         }
         setBusy(false);
@@ -754,7 +785,11 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
               type: 'button',
               className: 'dsh-cm-toggle',
               'aria-label': translate('multi.label'),
-              onClick: () => multi.toggleActive(),
+              onClick: () => {
+                window.clearTimeout(hoverTimer.current);
+                setTooltip(false);
+                multi.toggleActive();
+              },
               onMouseEnter: () => {
                 window.clearTimeout(hoverTimer.current);
                 hoverTimer.current = window.setTimeout(() => setTooltip(true), 400);
