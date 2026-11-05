@@ -21,7 +21,10 @@
  * also discovered by scanning the group directories, and the exact group is
  * derived from the session header cwd through `sessionPersistence.stat()`.
  *
- * Deletion is irreversible: there is no trash, exactly like `rm -rf`.
+ * Deletion is irreversible: there is no trash, exactly like `rm -rf`. A deleted
+ * id is also remembered (tombstoned) for a while: a Session that is still
+ * resident can flush its log back to disk after the delete, so a small sweeper
+ * keeps removing that copy and keeps the row off every open page.
  */
 import { promises as fsp } from 'node:fs';
 import { homedir } from 'node:os';
@@ -33,6 +36,16 @@ const BODY_LIMIT = 64 * 1024;
 /** Session ids are opaque, but they are also used as a directory name. */
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:@~-]{0,199}$/;
 const SAFE_SEGMENT = /^[A-Za-z0-9._-]$/;
+
+/**
+ * A deleted id is remembered for a while: a session that is still resident in
+ * the host keeps a writer alive and can flush its log back to disk, which made
+ * the row reappear after a "successful" delete. The tombstone lets the sweeper
+ * remove the recreated store again until the writer is gone.
+ */
+const DELETED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const ENFORCE_WINDOW_MS = 10 * 60 * 1000;
+const ENFORCE_INTERVAL_MS = 2500;
 
 const json = (status, value) =>
   new Response(JSON.stringify(value), {
@@ -220,13 +233,24 @@ async function locateSessionDirs(ctx, sessionId) {
   return [...found];
 }
 
+/** Remove the projection-cache record that mirrors the session summary. */
+async function removeProjectionCache(sessionId) {
+  const cacheDir = path.join(dshHome(), 'storages', 'session_projcache', 'sessions');
+  for (const name of new Set([`${sessionId}.json`, `${encodeSegment(sessionId)}.json`])) {
+    try {
+      await fsp.rm(path.join(cacheDir, name), { force: true });
+    } catch {
+      /* a stale projection cache is harmless */
+    }
+  }
+}
+
 /** Remove the durable store plus its projection-cache record. */
 async function removeStorage(ctx, sessionId, targets) {
-  const home = dshHome();
   const removed = [];
   for (const dir of targets) {
     try {
-      await fsp.rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 120 });
+      await fsp.rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
       removed.push(dir);
     } catch (error) {
       const busy = ['EBUSY', 'EPERM', 'EACCES', 'ENOTEMPTY'].includes(error?.code);
@@ -238,16 +262,7 @@ async function removeStorage(ctx, sessionId, targets) {
       );
     }
   }
-  const cacheDir = path.join(home, 'storages', 'session_projcache', 'sessions');
-  for (const name of new Set([`${sessionId}.json`, `${encodeSegment(sessionId)}.json`])) {
-    const cache = path.join(cacheDir, name);
-    try {
-      await fsp.rm(cache, { force: true });
-      removed.push(cache);
-    } catch {
-      /* a stale projection cache is harmless */
-    }
-  }
+  await removeProjectionCache(sessionId);
   return { targets, removed };
 }
 
@@ -306,6 +321,134 @@ async function writeJournal(ids) {
   } catch (error) {
     warn('journal write failed', textOf(error));
   }
+}
+
+/* -------------------------------------------------------------------------- *
+ * Deleted-session tombstones.
+ *
+ * Deleting the store is not enough while the session is still resident: the
+ * host keeps a writer for an open conversation and flushes it again, recreating
+ * the exact directory we just removed. The row then reappears and the next
+ * delete either races the writer or finds nothing on disk. Remembering the id
+ * (and the paths we removed) lets a small sweeper keep the store deleted and
+ * keep the row off every open page until the writer is gone.
+ * -------------------------------------------------------------------------- */
+
+const deletedPath = () => path.join(dshHome(), 'storages', 'conversation-manager', 'deleted.json');
+/** sessionId -> { at, dirs } */
+const deletedIds = new Map();
+let deletedLoaded = false;
+let enforceTimer;
+let enforceCtx;
+
+async function loadDeleted() {
+  if (deletedLoaded) return;
+  deletedLoaded = true;
+  let parsed;
+  try {
+    parsed = JSON.parse(await fsp.readFile(deletedPath(), 'utf8'));
+  } catch {
+    return;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return;
+  const now = Date.now();
+  for (const [id, entry] of Object.entries(parsed)) {
+    if (typeof id !== 'string' || !SAFE_ID.test(id)) continue;
+    const at = typeof entry === 'number' ? entry : typeof entry?.at === 'number' ? entry.at : now;
+    if (now - at > DELETED_TTL_MS) continue;
+    const dirs = Array.isArray(entry?.dirs) ? entry.dirs.filter((value) => typeof value === 'string') : [];
+    deletedIds.set(id, { at, dirs });
+  }
+}
+
+async function saveDeleted() {
+  try {
+    const file = deletedPath();
+    await fsp.mkdir(path.dirname(file), { recursive: true });
+    const now = Date.now();
+    const payload = {};
+    for (const [id, entry] of [...deletedIds]) {
+      if (now - entry.at > DELETED_TTL_MS) {
+        deletedIds.delete(id);
+        continue;
+      }
+      payload[id] = { at: entry.at, dirs: entry.dirs };
+    }
+    await fsp.writeFile(file, JSON.stringify(payload, null, 2), 'utf8');
+  } catch (error) {
+    warn('deleted journal write failed', textOf(error));
+  }
+}
+
+/** Remember a deleted id and start the sweeper that keeps it deleted. */
+async function rememberDeleted(ctx, sessionId, dirs) {
+  await loadDeleted();
+  const previous = deletedIds.get(sessionId);
+  const kept = new Set([...(previous?.dirs ?? []), ...(dirs ?? [])]);
+  deletedIds.set(sessionId, { at: Date.now(), dirs: [...kept] });
+  await saveDeleted();
+  startEnforcement(ctx);
+}
+
+function startEnforcement(ctx) {
+  if (!enforceCtx) enforceCtx = ctx;
+  if (enforceTimer) return;
+  enforceTimer = setInterval(() => {
+    enforceDeleted(enforceCtx).catch((error) => warn('deleted sweep failed', textOf(error)));
+  }, ENFORCE_INTERVAL_MS);
+  enforceTimer?.unref?.();
+}
+
+/** Remove recreated stores for tombstoned ids and keep their rows out of the list. */
+async function enforceDeleted(ctx) {
+  await loadDeleted();
+  if (deletedIds.size === 0) return;
+  if (enforceTimer === undefined) startEnforcement(ctx);
+  const now = Date.now();
+  let changed = false;
+  let budget = 50;
+  for (const [sessionId, entry] of [...deletedIds]) {
+    if (budget-- <= 0) break;
+    if (now - entry.at > DELETED_TTL_MS) {
+      deletedIds.delete(sessionId);
+      changed = true;
+      continue;
+    }
+    let removed = 0;
+    if (entry.dirs.length === 0) {
+      // The store was already gone at delete time; look for a recreated one.
+      try {
+        entry.dirs = await locateSessionDirs(ctx, sessionId);
+        changed = entry.dirs.length > 0 || changed;
+      } catch (error) {
+        warn('deleted lookup failed', sessionId, textOf(error));
+      }
+    }
+    for (const dir of [...entry.dirs]) {
+      try {
+        if (!(await isDirectory(dir))) continue;
+        await fsp.rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+        removed += 1;
+      } catch (error) {
+        warn('deleted removal failed', sessionId, textOf(error));
+      }
+    }
+    if (removed > 0) {
+      await removeProjectionCache(sessionId);
+      try {
+        await forgetInRegistry(ctx, sessionId);
+      } catch (error) {
+        warn('deleted detach failed', sessionId, textOf(error));
+      }
+      announceRemoval(ctx, sessionId);
+      changed = true;
+    } else if (now - entry.at < ENFORCE_WINDOW_MS) {
+      // The row can be re-announced by the host while the session is resident;
+      // keep telling the pages it is gone until that window closes.
+      announceRemoval(ctx, sessionId);
+    }
+  }
+  if (changed) await saveDeleted();
 }
 
 /**
@@ -385,13 +528,25 @@ async function handleDelete(ctx, request) {
   try {
     const targets = await locateSessionDirs(ctx, sessionId);
     if (targets.length === 0) {
-      // Nothing on disk: report the truth instead of pretending success, so a
-      // conversation that still shows up can be diagnosed instead of silently
-      // "deleted" while it keeps living in the sidebar.
-      return json(404, {
-        ok: false,
-        message: '没有找到这个对话的存储文件（可能已经被删除了）。',
+      // Nothing on disk. The row may still be listed from the live session or a
+      // stale projection; forget it in the registry, keep the tombstone so a
+      // late flush cannot bring it back, and report success so the phantom row
+      // can be dismissed instead of erroring forever.
+      const cleanup = await forgetInRegistry(ctx, sessionId);
+      await removeProjectionCache(sessionId);
+      await rememberDeleted(ctx, sessionId, []);
+      const announced = announceRemoval(ctx, sessionId);
+      return json(200, {
+        ok: true,
         sessionId,
+        missing: true,
+        removedGroups: 0,
+        removedPaths: 0,
+        swept: 0,
+        detached: cleanup.detached,
+        hidden: false,
+        archived: false,
+        announced,
       });
     }
     // Stop any running work and hide the row before the store goes away; a live
@@ -411,6 +566,9 @@ async function handleDelete(ctx, request) {
       throw error;
     }
     const cleanup = await forgetInRegistry(ctx, sessionId);
+    // Remember the deletion: a resident session can flush its log back to disk
+    // after this point, and the sweeper removes that copy again.
+    await rememberDeleted(ctx, sessionId, storage.targets);
     // A still-live container can recreate the store right after removal; sweep
     // once more so "deleted" is not undone by a late flush.
     let swept = 0;
@@ -479,12 +637,17 @@ export function apply(ctx) {
   };
   if (typeof ctx.inject === 'function') ctx.inject(['connection'], install);
   else install(ctx);
-  // A delete archives the row to hide it at once, then clears that marker on a
-  // later boot, once the store it referred to is gone.
+  // Startup: unarchive ghosts left by an interrupted delete, then enforce the
+  // tombstones once (a resident session may have recreated its store while the
+  // app was closed) and keep the sweeper running.
   try {
     const timer = setTimeout(() => {
-      pruneArchivedGhosts(ctx).catch((error) => warn('prune failed', textOf(error)));
-    }, 4000);
+      loadDeleted()
+        .then(() => enforceDeleted(ctx))
+        .then(() => startEnforcement(ctx))
+        .then(() => pruneArchivedGhosts(ctx))
+        .catch((error) => warn('startup sweep failed', textOf(error)));
+    }, 3000);
     timer?.unref?.();
   } catch (error) {
     warn('prune scheduling failed', textOf(error));
