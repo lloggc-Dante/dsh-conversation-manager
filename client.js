@@ -410,16 +410,24 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected]::before {
 html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background: var(--dsw-alias-bg-layer-2, rgba(127,127,127,.12)); }
 
 .dsh-cm-toggle {
-  position: fixed; display: flex; align-items: center; justify-content: center; gap: 5px;
-  height: 26px; padding: 0 10px; box-sizing: border-box; cursor: pointer; z-index: 61;
-  border: .5px solid var(--dsw-alias-border-l3, var(--dsw-alias-border-l1, rgba(127,127,127,.28)));
-  border-radius: var(--dsw-radius-md, 10px);
-  background: var(--dsw-alias-button-elevated-fill, transparent);
-  color: var(--dsw-alias-label-primary, #e6e6e6);
-  font: inherit; font-size: 12px; line-height: 16px; font-weight: 500;
-  box-shadow: none; outline: none;
+  position: fixed; display: flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0; box-sizing: border-box; cursor: pointer; z-index: 61;
+  border: 0; border-radius: var(--dsw-radius-sm, 6px);
+  background: transparent;
+  color: var(--dsw-alias-label-secondary, #8a8f98);
+  font: inherit; box-shadow: none; outline: none;
 }
-.dsh-cm-toggle:hover { background: var(--dsw-alias-button-floating-hover, var(--dsw-alias-bg-layer-2, rgba(127,127,127,.14))); }
+.dsh-cm-toggle:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.14)); color: var(--dsw-alias-label-primary, #e6e6e6); }
+.dsh-cm-toggle:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary, #4d6bfe); outline-offset: 1px; }
+
+.dsh-cm-tooltip {
+  position: fixed; z-index: 62; transform: translateX(-50%);
+  background: var(--dsw-alias-label-primary, #1f1f1f);
+  color: var(--dsw-alias-bg-base, #ffffff);
+  font: inherit; font-size: 12px; line-height: 16px;
+  padding: 5px 8px; border-radius: 8px; white-space: nowrap; pointer-events: none;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, .18);
+}
 
 .dsh-cm-bar {
   position: fixed; display: flex; align-items: center; gap: 8px; padding: 8px 10px; box-sizing: border-box;
@@ -614,10 +622,15 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
         }
         node = node.parentElement;
       }
-      const toggleWidth = 62;
+      const toggleWidth = 26;
       const toggle = expanded || boxRect.left < 90
         ? null
-        : { left: boxRect.left - toggleWidth - 6, top: boxRect.top + (boxRect.height - 24) / 2, width: toggleWidth };
+        : {
+            left: boxRect.left - toggleWidth - 10,
+            top: boxRect.top + (boxRect.height - toggleWidth) / 2,
+            width: toggleWidth,
+            center: boxRect.left - toggleWidth - 10 + toggleWidth / 2,
+          };
       const bar = sidebarRect
         ? { left: sidebarRect.left + 12, width: Math.max(150, sidebarRect.width - 24), bottom: 66 }
         : null;
@@ -630,7 +643,7 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
       if (kind === 'check') {
         return h(
           'svg',
-          { viewBox: '0 0 16 16', width: 14, height: 14, fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': 'true' },
+          { viewBox: '0 0 16 16', width: 16, height: 16, fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': 'true' },
           h('path', { d: 'M3 4.5l1.6 1.6L7.4 3' }),
           h('path', { d: 'M3 10.5l1.6 1.6L7.4 9' }),
           h('path', { d: 'M9.2 5h4' }),
@@ -639,7 +652,7 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
       }
       return h(
         'svg',
-        { viewBox: '0 0 16 16', width: 14, height: 14, fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': 'true' },
+        { viewBox: '0 0 16 16', width: 16, height: 16, fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': 'true' },
         h('path', { d: 'M2.5 4.5h11' }),
         h('path', { d: 'M2.5 8h11' }),
         h('path', { d: 'M2.5 11.5h11' }),
@@ -655,6 +668,12 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
       const [confirming, setConfirming] = React.useState(false);
       const [busy, setBusy] = React.useState(false);
       const [errorText, setErrorText] = React.useState('');
+      const [tooltip, setTooltip] = React.useState(false);
+      const hoverTimer = React.useRef(0);
+      React.useEffect(() => () => window.clearTimeout(hoverTimer.current), []);
+      React.useEffect(() => {
+        if (state.active) setTooltip(false);
+      }, [state.active]);
 
       React.useEffect(() => {
         let alive = true;
@@ -737,12 +756,35 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
               'aria-label': translate('multi.label'),
               title: translate('multi.label'),
               onClick: () => multi.toggleActive(),
-              style: { left: anchors.toggle.left, top: anchors.toggle.top, width: anchors.toggle.width },
+              onMouseEnter: () => {
+                window.clearTimeout(hoverTimer.current);
+                hoverTimer.current = window.setTimeout(() => setTooltip(true), 400);
+              },
+              onMouseLeave: () => {
+                window.clearTimeout(hoverTimer.current);
+                setTooltip(false);
+              },
+              onFocus: () => setTooltip(true),
+              onBlur: () => setTooltip(false),
+              style: { left: anchors.toggle.left, top: anchors.toggle.top },
             },
             multiIcon('checklist'),
-            h('span', { style: { whiteSpace: 'nowrap' } }, translate('multi.label')),
           ),
         );
+        if (tooltip) {
+          children.push(
+            h(
+              'div',
+              {
+                key: 'tooltip',
+                className: 'dsh-cm-tooltip',
+                role: 'tooltip',
+                style: { left: anchors.toggle.center, top: anchors.toggle.top + 26 + 6 },
+              },
+              translate('multi.label'),
+            ),
+          );
+        }
       }
 
       if (state.active && anchors.bar) {
