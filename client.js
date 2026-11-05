@@ -400,14 +400,18 @@ html.dsh-cm-multi [data-row-key^="session:"] > span:first-child > * { visibility
 /* The ring lives in the row's leading cell, so it lines up with the folder icons. */
 html.dsh-cm-multi [data-row-key^="session:"] > span:first-child::before {
   content: ""; position: absolute; left: 50%; top: 50%; width: 14px; height: 14px;
-  margin: -7px 0 0 -7px; box-sizing: border-box; border-radius: 50%;
-  border: 1px solid var(--dsw-alias-label-secondary, #8a8f98);
-  background: transparent; pointer-events: none; z-index: 2;
+  margin: -7px 0 0 -7px; box-sizing: border-box; border: 0; border-radius: 50%; padding: 0;
+  background: radial-gradient(circle 7px at 50% 50%,
+    transparent 0 5.5px,
+    var(--dsw-alias-label-secondary, #8a8f98) 5.6px 6.5px,
+    transparent 6.6px);
+  pointer-events: none; z-index: 2;
 }
 html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] > span:first-child::after {
   content: ""; position: absolute; left: 50%; top: 50%; width: 7px; height: 7px;
   margin: -3.5px 0 0 -3.5px; box-sizing: border-box; border-radius: 50%;
-  background: #7AAAFF; pointer-events: none; z-index: 2;
+  background: radial-gradient(circle 3.5px at 50% 50%, #7AAAFF 3.3px, transparent 3.4px);
+  pointer-events: none; z-index: 2;
 }
 html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background: var(--dsw-alias-bg-layer-2, rgba(127,127,127,.12)); }
 
