@@ -411,7 +411,7 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
 
 .dsh-cm-toggle {
   position: fixed; display: flex; align-items: center; justify-content: center;
-  width: 26px; height: 26px; padding: 0; box-sizing: border-box; cursor: pointer; z-index: 61;
+  width: 28px; height: 28px; padding: 0; box-sizing: border-box; cursor: pointer; z-index: 61;
   border: 0; border-radius: var(--dsw-radius-sm, 6px);
   background: transparent;
   color: var(--dsw-alias-label-secondary, #8a8f98);
@@ -622,14 +622,14 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
         }
         node = node.parentElement;
       }
-      const toggleWidth = 26;
+      const toggleWidth = 28;
       const toggle = expanded || boxRect.left < 90
         ? null
         : {
-            left: boxRect.left - toggleWidth - 10,
+            left: boxRect.left - toggleWidth - 4,
             top: boxRect.top + (boxRect.height - toggleWidth) / 2,
             width: toggleWidth,
-            center: boxRect.left - toggleWidth - 10 + toggleWidth / 2,
+            center: boxRect.left - toggleWidth - 4 + toggleWidth / 2,
           };
       const bar = sidebarRect
         ? { left: sidebarRect.left + 12, width: Math.max(150, sidebarRect.width - 24), bottom: 66 }
@@ -779,7 +779,7 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
                 key: 'tooltip',
                 className: 'dsh-cm-tooltip',
                 role: 'tooltip',
-                style: { left: anchors.toggle.center, top: anchors.toggle.top + 26 + 6 },
+                style: { left: anchors.toggle.center, top: anchors.toggle.top + 28 + 6 },
               },
               translate('multi.label'),
             ),
