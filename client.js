@@ -421,12 +421,12 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
 .dsh-cm-toggle:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary, #4d6bfe); outline-offset: 1px; }
 
 .dsh-cm-tooltip {
-  position: fixed; z-index: 62; transform: translateX(-50%);
-  background: var(--dsw-alias-label-primary, #1f1f1f);
-  color: var(--dsw-alias-bg-base, #ffffff);
-  font: inherit; font-size: 12px; line-height: 16px;
-  padding: 5px 8px; border-radius: 8px; white-space: nowrap; pointer-events: none;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, .18);
+  position: fixed; z-index: 100; transform: translateX(-50%);
+  background: var(--dsw-alias-tooltip-bg, #3a3a3a);
+  color: var(--dsw-static-neutral-bluish-00, #ffffff);
+  font: inherit; font-size: 13px; line-height: 20px;
+  padding: 3px 7px; border-radius: var(--dsw-radius-sm, 6px); white-space: pre-line;
+  width: max-content; max-width: min(50vw, calc(100vw - 24px)); pointer-events: none;
 }
 
 .dsh-cm-bar {
@@ -639,23 +639,14 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
 
     const sameAnchors = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
-    function multiIcon(kind) {
-      if (kind === 'check') {
-        return h(
-          'svg',
-          { viewBox: '0 0 16 16', width: 16, height: 16, fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': 'true' },
-          h('path', { d: 'M3 4.5l1.6 1.6L7.4 3' }),
-          h('path', { d: 'M3 10.5l1.6 1.6L7.4 9' }),
-          h('path', { d: 'M9.2 5h4' }),
-          h('path', { d: 'M9.2 11h4' }),
-        );
-      }
+    function multiIcon() {
+      // A "check-square" line icon at the same weight as the neighbouring header
+      // icons (search / view options / new workspace).
       return h(
         'svg',
         { viewBox: '0 0 16 16', width: 16, height: 16, fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': 'true' },
-        h('path', { d: 'M2.5 4.5h11' }),
-        h('path', { d: 'M2.5 8h11' }),
-        h('path', { d: 'M2.5 11.5h11' }),
+        h('path', { d: 'M13.4 8.2v3.5a1.6 1.6 0 0 1-1.6 1.6H4.2a1.6 1.6 0 0 1-1.6-1.6V4.1a1.6 1.6 0 0 1 1.6-1.6h5.4' }),
+        h('path', { d: 'M6 6.9l2 2 4.6-4.6' }),
       );
     }
 
@@ -754,7 +745,6 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
               type: 'button',
               className: 'dsh-cm-toggle',
               'aria-label': translate('multi.label'),
-              title: translate('multi.label'),
               onClick: () => multi.toggleActive(),
               onMouseEnter: () => {
                 window.clearTimeout(hoverTimer.current);
@@ -768,7 +758,7 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
               onBlur: () => setTooltip(false),
               style: { left: anchors.toggle.left, top: anchors.toggle.top },
             },
-            multiIcon('checklist'),
+            multiIcon(),
           ),
         );
         if (tooltip) {
