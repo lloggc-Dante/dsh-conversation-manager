@@ -7,4 +7,5 @@
 # "delete conversation" row to the sidebar session menu.
 - insert:
     - id: conversation-manager
-      name: 'dsh-conversation-manager'
+      name: '@logic-dante/dsh-conversation-manager'
+

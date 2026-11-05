@@ -5,7 +5,7 @@
  * clicking it deletes the conversation for good (host half: index.js).
  */
 window.__ModuleLoader__.load({
-  id: 'dsh-conversation-manager',
+  id: '@logic-dante/dsh-conversation-manager',
   factory: (require) => {
     const React = require('react');
     const h = React.createElement;
@@ -1156,5 +1156,6 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
     };
   },
 });
+
 
 
