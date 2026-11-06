@@ -89,6 +89,8 @@ window.__ModuleLoader__.load({
     const REST_MS = 260;
     const FLY_MS = 760;
     const REMOVAL_MS = STRIKE_MS + HOLD_MS + SINK_MS + REST_MS + FLY_MS;
+/** Rows below a removed row glide into the freed space over this long. */
+const REFLOW_MS = 420;
     const OWN_ROW_SELECTOR = '[data-dsh-conversation-manager="delete"]';
 
     // The Session list lives in the left sidebar column, while the conversation
@@ -691,6 +693,55 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
       );
     }
 
+    /**
+     * Drop invisible rows out of the layout and let everything below glide up
+     * into the freed space with the same slow-in/out feel as the choreography.
+     * Without the FLIP step the list snaps upward in a single frame.
+     */
+    function collapseRowsAndReflow(removedRows) {
+      if (typeof document === 'undefined') return;
+      // Workspace headers move too; animate everything that changes position.
+      const all = [...document.querySelectorAll('[data-row-key]')].filter(
+        (node) => node.isConnected !== false,
+      );
+      const beforeTops = new Map();
+      for (const node of all) {
+        try {
+          beforeTops.set(node, node.getBoundingClientRect().top);
+        } catch {
+          /* ignore unmeasurable rows */
+        }
+      }
+      for (const row of removedRows) {
+        if (row) row.setAttribute('data-dsh-cm-removing', '');
+      }
+      for (const node of all) {
+        if (node.isConnected === false) continue;
+        if (node.hasAttribute && node.hasAttribute('data-dsh-cm-removing')) continue;
+        const before = beforeTops.get(node);
+        if (before === undefined) continue;
+        let delta = 0;
+        try {
+          delta = before - node.getBoundingClientRect().top;
+        } catch {
+          continue;
+        }
+        if (delta <= 0.5) continue;
+        if (typeof node.animate !== 'function') continue;
+        try {
+          node.animate(
+            [
+              { transform: `translate3d(0, ${delta}px, 0)` },
+              { transform: 'translate3d(0, 0, 0)' },
+            ],
+            { duration: REFLOW_MS, easing: 'cubic-bezier(0.65, 0, 0.35, 1)' },
+          );
+        } catch {
+          /* motion is optional */
+        }
+      }
+    }
+
     function MultiSelectOverlay(props) {
       const multi = props.multi;
       const translate = typeof props.translate === 'function' ? props.translate : (key) => FALLBACK[key] || key;
@@ -771,12 +822,14 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
         }
         if (effects.size > 0) await new Promise((resolve) => window.setTimeout(resolve, REMOVAL_MS));
         // The rows are invisible once the choreography ends, but they still hold
-        // their space. Drop them all in the same frame so the list below jumps up
-        // once, instead of stepping up again for every per-session removal.
+        // their space. Drop them all in one step and animate the rows below into
+        // the freed space, so the list glides up instead of snapping.
+        const removedRows = [];
         for (const id of ids) {
           const row = findRowElement(id);
-          if (row) row.setAttribute('data-dsh-cm-removing', '');
+          if (row) removedRows.push(row);
         }
+        if (removedRows.length > 0) collapseRowsAndReflow(removedRows);
         const failures = [];
         for (const id of ids) {
           try {
@@ -1047,10 +1100,16 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
           else dismissMenu();
           try {
             if (effect) await effect.done;
+            // The row is invisible now but still holds its slot. Collapse it and
+            // let the rows below glide up instead of snapping into place.
+            const targetRow = row || findRowElement(sessionId);
+            if (targetRow) collapseRowsAndReflow([targetRow]);
             await requestDelete(sessionId);
             setPhase('done');
             dismissMenu();
           } catch (error) {
+            const targetRow = row || findRowElement(sessionId);
+            if (targetRow) targetRow.removeAttribute('data-dsh-cm-removing');
             if (effect) {
               try {
                 effect.restore();
@@ -1184,6 +1243,7 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
     };
   },
 });
+
 
 
 
