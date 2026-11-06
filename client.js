@@ -83,11 +83,11 @@ window.__ModuleLoader__.load({
     // v1 removal choreography (milliseconds): a strike line sweeps left→right over
     // the Session title, the row rests a beat, then grays out, sinks, and flies off
     // to the left. Deliberately slow: the whole exit is meant to be watched.
-    const STRIKE_MS = 650;
-    const HOLD_MS = 160;
-    const SINK_MS = 420;
-    const REST_MS = 200;
-    const FLY_MS = 640;
+    const STRIKE_MS = 780;
+    const HOLD_MS = 220;
+    const SINK_MS = 540;
+    const REST_MS = 260;
+    const FLY_MS = 760;
     const REMOVAL_MS = STRIKE_MS + HOLD_MS + SINK_MS + REST_MS + FLY_MS;
     const OWN_ROW_SELECTOR = '[data-dsh-conversation-manager="delete"]';
 
@@ -275,11 +275,18 @@ window.__ModuleLoader__.load({
           row.appendChild(line);
           if (typeof line.animate === 'function') {
             animations.push(
-              line.animate([{ transform: 'scaleX(0)' }, { transform: 'scaleX(1)' }], {
-                duration: STRIKE_MS,
-                easing: 'cubic-bezier(0.65, 0, 0.35, 1)',
-                fill: 'forwards',
-              }),
+              line.animate(
+                [
+                  { transform: 'scaleX(0)', opacity: 0.45 },
+                  { transform: 'scaleX(0.6)', opacity: 1, offset: 0.62 },
+                  { transform: 'scaleX(1)', opacity: 1 },
+                ],
+                {
+                  duration: STRIKE_MS,
+                  easing: 'cubic-bezier(0.87, 0, 0.13, 1)',
+                  fill: 'forwards',
+                },
+              ),
             );
           }
           if (typeof row.animate === 'function') {
@@ -290,14 +297,15 @@ window.__ModuleLoader__.load({
               row.animate(
                 [
                   { filter: 'grayscale(0)', transform: 'translate3d(0, 0, 0) scale(1)', opacity: 1, offset: 0 },
-                  { filter: 'grayscale(1)', transform: 'translate3d(0, 9px, 0) scale(0.985)', opacity: 1, offset: sinkEnd },
-                  { filter: 'grayscale(1)', transform: 'translate3d(0, 10px, 0) scale(0.985)', opacity: 0.98, offset: restEnd },
-                  { filter: 'grayscale(1)', transform: 'translate3d(-120%, 18px, 0) scale(0.96)', opacity: 0, offset: 1 },
+                  { filter: 'grayscale(0.55)', transform: 'translate3d(0, 3px, 0) scale(0.997)', opacity: 1, offset: sinkEnd * 0.55 },
+                  { filter: 'grayscale(1)', transform: 'translate3d(0, 7px, 0) scale(0.992)', opacity: 0.96, offset: sinkEnd },
+                  { filter: 'grayscale(1)', transform: 'translate3d(0, 8px, 0) scale(0.992)', opacity: 0.9, offset: restEnd },
+                  { filter: 'grayscale(1)', transform: 'translate3d(-110%, 16px, 0) scale(0.965)', opacity: 0, offset: 1 },
                 ],
                 {
                   duration: exitTotal,
                   delay: STRIKE_MS + HOLD_MS,
-                  easing: 'cubic-bezier(0.4, 0, 0.2, 1)',
+                  easing: 'cubic-bezier(0.65, 0, 0.35, 1)',
                   fill: 'forwards',
                 },
               ),
@@ -1176,6 +1184,7 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
     };
   },
 });
+
 
 
 
