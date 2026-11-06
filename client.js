@@ -636,43 +636,65 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
     }
 
     /** Locate the sidebar search input and the column around it. */
-    function measureAnchors() {
-      if (typeof document === 'undefined') return { toggle: null, bar: null };
-      const viewportHeight = window.innerHeight || 800;
-      const viewportWidth = window.innerWidth || 1200;
-      let found = null;
+    /** The sidebar's search control, used to place the multi-select toggle. */
+    function findSearchAnchor(viewportWidth, viewportHeight) {
+      const inSidebar = (rect, width) =>
+        rect.width >= width &&
+        rect.height >= 14 &&
+        rect.left >= 0 &&
+        rect.left <= Math.min(480, viewportWidth * 0.5) &&
+        rect.top <= viewportHeight * 0.5;
+      // Primary: the search button itself. Its class name contains "search" and it
+      // carries aria-expanded, so it survives layout changes around the input.
+      for (const node of document.querySelectorAll('button[aria-expanded]')) {
+        const className = typeof node.className === 'string' ? node.className : '';
+        if (className.indexOf('search') === -1) continue;
+        const rect = node.getBoundingClientRect();
+        if (!inSidebar(rect, 20)) continue;
+        return { element: node, rect, expanded: node.getAttribute('aria-expanded') === 'true' };
+      }
+      for (const node of document.querySelectorAll('[class*="searchButton"]')) {
+        const rect = node.getBoundingClientRect();
+        if (!inSidebar(rect, 20)) continue;
+        return { element: node, rect, expanded: node.getAttribute('aria-expanded') === 'true' };
+      }
+      // Fallback: the collapsed input inside its search box.
       for (const input of document.querySelectorAll('input')) {
         const type = (input.getAttribute('type') || '').toLowerCase();
         if (type !== 'text' && type !== 'search') continue;
         const box = input.parentElement || input;
-        const boxRect = box.getBoundingClientRect();
-        if (!(boxRect.width >= 16 && boxRect.height >= 14)) continue;
-        if (boxRect.left < 0 || boxRect.left > Math.min(460, viewportWidth * 0.45)) continue;
-        if (boxRect.top > viewportHeight * 0.45) continue;
-        found = { input, box, boxRect };
-        break;
+        const rect = box.getBoundingClientRect();
+        if (!inSidebar(rect, 16)) continue;
+        return { element: input, rect, expanded: rect.width > 130 };
       }
-      if (!found) return { toggle: null, bar: null };
-      const { boxRect } = found;
-      const expanded = boxRect.width > 130;
+      return null;
+    }
+
+    function measureAnchors() {
+      if (typeof document === 'undefined') return { toggle: null, bar: null };
+      const viewportHeight = window.innerHeight || 800;
+      const viewportWidth = window.innerWidth || 1200;
+      const anchor = findSearchAnchor(viewportWidth, viewportHeight);
+      if (!anchor) return { toggle: null, bar: null };
+      const { element, rect, expanded } = anchor;
       let sidebarRect = null;
-      let node = found.input;
+      let node = element;
       while (node && node !== document.body) {
-        const rect = node.getBoundingClientRect();
-        if (rect.left <= 12 && rect.width >= 180 && rect.width <= 560 && rect.height >= viewportHeight * 0.6) {
-          sidebarRect = rect;
+        const candidate = node.getBoundingClientRect();
+        if (candidate.left <= 12 && candidate.width >= 180 && candidate.width <= 560 && candidate.height >= viewportHeight * 0.6) {
+          sidebarRect = candidate;
           break;
         }
         node = node.parentElement;
       }
       const toggleWidth = 28;
-      const toggle = expanded || boxRect.left < 90
+      const toggle = expanded || rect.left < 90
         ? null
         : {
-            left: boxRect.left - toggleWidth - 4,
-            top: boxRect.top + (boxRect.height - toggleWidth) / 2,
+            left: rect.left - toggleWidth - 4,
+            top: rect.top + (rect.height - toggleWidth) / 2,
             width: toggleWidth,
-            center: boxRect.left - toggleWidth - 4 + toggleWidth / 2,
+            center: rect.left - toggleWidth - 4 + toggleWidth / 2,
           };
       const bar = sidebarRect
         ? { left: sidebarRect.left + 12, width: Math.max(150, sidebarRect.width - 24), bottom: 66 }
