@@ -13,6 +13,7 @@ window.__ModuleLoader__.load({
     const SLOT = 'sidebar.workspaces.session.menu.item';
     const NAMESPACE = 'conversation-manager';
     const ROUTE = 'api/conversation-manager/delete';
+    const TRASH_ROUTE = 'api/conversation-manager/trash';
     const ACTION_HEADER = 'x-dsh-conversation-manager';
 
     const FALLBACK = {
@@ -32,6 +33,25 @@ window.__ModuleLoader__.load({
       'multi.confirm.body': '将永久删除 {count} 个对话及其本地记录，无法恢复。',
       'multi.confirm.cancel': '取消',
       'multi.confirm.confirm': '确认删除',
+      'trash.section': '回收站',
+      'trash.title': '回收站',
+      'trash.subtitle': '删除的对话会保留 30 天，可在这里恢复。',
+      'trash.loading': '正在读取回收站…',
+      'trash.empty': '回收站是空的。',
+      'trash.reload': '刷新',
+      'trash.restore': '恢复',
+      'trash.purge': '彻底删除',
+      'trash.confirm': '确认',
+      'trash.cancel': '取消',
+      'trash.purgeAll': '清空回收站',
+      'trash.confirmPurgeAll': '确认清空？',
+      'trash.remaining': '剩余 {days} 天',
+      'trash.deletedAt': '删除于 {time}',
+      'trash.workspace': '原工作区：{name}',
+      'trash.ungrouped': '未分组',
+      'trash.orphaned': '原工作区已删除，恢复后进入未分组',
+      'trash.error': '操作失败：{message}',
+      'trash.size': '{size}',
     };
 
     const dictionaries = {
@@ -53,6 +73,25 @@ window.__ModuleLoader__.load({
         'multi.confirm.body': 'This permanently deletes {count} conversations and their local records. It cannot be undone.',
         'multi.confirm.cancel': 'Cancel',
         'multi.confirm.confirm': 'Delete',
+        'trash.section': 'Recycle bin',
+        'trash.title': 'Recycle bin',
+        'trash.subtitle': 'Deleted conversations are kept for 30 days and can be restored here.',
+        'trash.loading': 'Reading the recycle bin…',
+        'trash.empty': 'The recycle bin is empty.',
+        'trash.reload': 'Refresh',
+        'trash.restore': 'Restore',
+        'trash.purge': 'Delete permanently',
+        'trash.confirm': 'Confirm',
+        'trash.cancel': 'Cancel',
+        'trash.purgeAll': 'Empty recycle bin',
+        'trash.confirmPurgeAll': 'Empty it?',
+        'trash.remaining': '{days} days left',
+        'trash.deletedAt': 'Deleted {time}',
+        'trash.workspace': 'Workspace: {name}',
+        'trash.ungrouped': 'Ungrouped',
+        'trash.orphaned': 'Its workspace was deleted; it will come back ungrouped',
+        'trash.error': 'Action failed: {message}',
+        'trash.size': '{size}',
       },
     };
 
@@ -63,6 +102,26 @@ window.__ModuleLoader__.load({
         credentials: 'same-origin',
         headers: { 'content-type': 'application/json', [ACTION_HEADER]: '1' },
         body: JSON.stringify({ sessionId }),
+      });
+      let payload;
+      try {
+        payload = await response.json();
+      } catch {
+        payload = undefined;
+      }
+      if (!response.ok || !payload || payload.ok !== true) {
+        throw new Error((payload && (payload.message || payload.error)) || `HTTP ${response.status}`);
+      }
+      return payload;
+    }
+
+    /** One call into the Host recycle-bin route. */
+    async function requestTrash(action, extra) {
+      const response = await fetch(new URL(TRASH_ROUTE, document.baseURI), {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json', [ACTION_HEADER]: '1' },
+        body: JSON.stringify(Object.assign({ action }, extra || {})),
       });
       let payload;
       try {
@@ -492,6 +551,59 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
 .dsh-cm-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 .dsh-cm-modal-actions .dsh-cm-ghost, .dsh-cm-modal-actions .dsh-cm-danger { padding: 7px 14px; font-size: 13px; border-radius: 10px; }
 .dsh-cm-multi-root > * { pointer-events: auto; }
+
+/* ------------------------------------------------------------------ *
+ * Recycle-bin settings page.
+ * ------------------------------------------------------------------ */
+.dsh-cm-trash {
+  display: flex; flex-direction: column; gap: 14px;
+  color: var(--dsw-alias-label-primary, #e6e6e6);
+  font-size: 13px; line-height: 20px;
+}
+.dsh-cm-trash-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.dsh-cm-trash-heading { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.dsh-cm-trash-title { font-size: 16px; font-weight: 600; line-height: 22px; }
+.dsh-cm-trash-sub { color: var(--dsw-alias-label-secondary, #a3a3a3); font-size: 12px; line-height: 18px; }
+.dsh-cm-trash-toolbar { display: flex; align-items: center; gap: 8px; flex: none; }
+.dsh-cm-trash-list {
+  display: flex; flex-direction: column; overflow: hidden;
+  border: .5px solid var(--dsw-alias-border-l2, rgba(127,127,127,.26));
+  border-radius: var(--dsw-radius-md, 10px);
+}
+.dsh-cm-trash-row {
+  display: flex; align-items: center; gap: 12px; padding: 10px 12px;
+  border-bottom: .5px solid var(--dsw-alias-border-l2, rgba(127,127,127,.18));
+}
+.dsh-cm-trash-row:last-child { border-bottom: 0; }
+.dsh-cm-trash-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.dsh-cm-trash-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.dsh-cm-trash-meta {
+  display: flex; flex-wrap: wrap; gap: 6px 10px;
+  color: var(--dsw-alias-label-secondary, #a3a3a3); font-size: 12px;
+}
+.dsh-cm-trash-orphan { color: var(--dsw-alias-state-warn-primary, #d19a27); }
+.dsh-cm-trash-actions { display: flex; align-items: center; gap: 6px; flex: none; }
+.dsh-cm-trash-empty {
+  padding: 30px 12px; text-align: center;
+  color: var(--dsw-alias-label-secondary, #a3a3a3); font-size: 13px;
+  border: .5px dashed var(--dsw-alias-border-l2, rgba(127,127,127,.3));
+  border-radius: var(--dsw-radius-md, 10px);
+}
+.dsh-cm-trash-btn {
+  border: .5px solid var(--dsw-alias-border-l2, rgba(127,127,127,.32));
+  background: transparent; color: inherit; font: inherit; font-size: 12px;
+  padding: 5px 10px; border-radius: 8px; cursor: pointer; white-space: nowrap;
+}
+.dsh-cm-trash-btn:hover:not(:disabled) { background: var(--dsw-alias-button-floating-hover, rgba(127,127,127,.12)); }
+.dsh-cm-trash-btn:disabled { opacity: .5; cursor: default; }
+.dsh-cm-trash-danger { color: var(--dsw-alias-state-error-primary, #e5484d); }
+.dsh-cm-trash-error { color: var(--dsw-alias-state-error-primary, #e5484d); font-size: 12px; }
+
+@keyframes dsh-cm-restore-flash {
+  0% { background: color-mix(in srgb, #7AAAFF 30%, transparent); }
+  100% { background: transparent; }
+}
+[data-dsh-cm-restored] { animation: dsh-cm-restore-flash 1.3s cubic-bezier(0.65, 0, 0.35, 1); }
 `;
 
     function createMultiSelect() {
@@ -722,25 +834,33 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
      */
     function collapseRowsAndReflow(removedRows) {
       if (typeof document === 'undefined') return;
-      // Workspace headers move too; animate everything that changes position.
-      const all = [...document.querySelectorAll('[data-row-key]')].filter(
-        (node) => node.isConnected !== false,
-      );
-      const beforeTops = new Map();
-      for (const node of all) {
-        try {
-          beforeTops.set(node, node.getBoundingClientRect().top);
-        } catch {
-          /* ignore unmeasurable rows */
-        }
-      }
+      // Workspace headers move too; the FLIP snapshot covers both row kinds.
+      const beforeTops = snapshotRowTops();
       for (const row of removedRows) {
         if (row) row.setAttribute('data-dsh-cm-removing', '');
       }
-      for (const node of all) {
-        if (node.isConnected === false) continue;
-        if (node.hasAttribute && node.hasAttribute('data-dsh-cm-removing')) continue;
-        const before = beforeTops.get(node);
+      animateRowsFrom(beforeTops);
+    }
+
+    /** Positions of every sidebar row, used as the FLIP "before" snapshot. */
+    function snapshotRowTops() {
+      const tops = new Map();
+      if (typeof document === 'undefined') return tops;
+      for (const node of document.querySelectorAll('[data-row-key]')) {
+        try {
+          tops.set(node, node.getBoundingClientRect().top);
+        } catch {
+          /* unmeasurable rows are skipped */
+        }
+      }
+      return tops;
+    }
+
+    /** Slide every row from its snapshot position to the one it has now. */
+    function animateRowsFrom(previousTops) {
+      if (!previousTops || typeof document === 'undefined') return;
+      for (const node of document.querySelectorAll('[data-row-key]')) {
+        const before = previousTops.get(node);
         if (before === undefined) continue;
         let delta = 0;
         try {
@@ -748,7 +868,7 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
         } catch {
           continue;
         }
-        if (delta <= 0.5) continue;
+        if (Math.abs(delta) <= 0.5) continue;
         if (typeof node.animate !== 'function') continue;
         try {
           node.animate(
@@ -762,6 +882,237 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
           /* motion is optional */
         }
       }
+    }
+
+    /** Flash the row that just came back and let the list make room for it. */
+    function animateRestoredSession(sessionId, previousTops) {
+      if (typeof window === 'undefined' || typeof document === 'undefined') return;
+      let attempts = 0;
+      const step = () => {
+        attempts += 1;
+        const row = findRowElement(sessionId);
+        if (row) {
+          animateRowsFrom(previousTops);
+          try {
+            row.setAttribute('data-dsh-cm-restored', '');
+            window.setTimeout(() => {
+              try {
+                row.removeAttribute('data-dsh-cm-restored');
+              } catch {
+                /* the row may have unmounted */
+              }
+            }, 1600);
+          } catch {
+            /* the row may have unmounted */
+          }
+          return;
+        }
+        if (attempts < 120) window.requestAnimationFrame(step);
+      };
+      window.requestAnimationFrame(step);
+    }
+
+    /** Format a trash timestamp with the runner's locale. */
+    function formatTrashTime(value) {
+      try {
+        const date = new Date(Number(value));
+        if (!Number.isFinite(date.getTime())) return '';
+        return date.toLocaleString(undefined, {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+      } catch {
+        return '';
+      }
+    }
+
+    function TrashPage(props) {
+      const translate = typeof props.translate === 'function' ? props.translate : (key) => FALLBACK[key] || key;
+      const [items, setItems] = React.useState([]);
+      const [phase, setPhase] = React.useState('loading');
+      const [errorText, setErrorText] = React.useState('');
+      const [busyId, setBusyId] = React.useState('');
+      const [confirmPurge, setConfirmPurge] = React.useState('');
+      const [confirmEmpty, setConfirmEmpty] = React.useState(false);
+
+      const applyError = React.useCallback(
+        (error) => {
+          setErrorText(translate('trash.error').replace('{message}', error && error.message ? error.message : String(error)));
+        },
+        [translate],
+      );
+
+      const reload = React.useCallback(async () => {
+        setPhase('loading');
+        setErrorText('');
+        try {
+          const payload = await requestTrash('list');
+          setItems(Array.isArray(payload.items) ? payload.items : []);
+          setPhase('ready');
+        } catch (error) {
+          setPhase('error');
+          applyError(error);
+        }
+      }, [applyError]);
+
+      React.useEffect(() => {
+        reload();
+      }, [reload]);
+
+      const restore = React.useCallback(
+        async (item) => {
+          if (busyId) return;
+          setBusyId(item.trashId);
+          setErrorText('');
+          // Snapshot before the request: the Host announcement inserts the row.
+          const previousTops = snapshotRowTops();
+          try {
+            await requestTrash('restore', { trashId: item.trashId });
+            setItems((previous) => previous.filter((entry) => entry.trashId !== item.trashId));
+            try {
+              if (typeof props.close === 'function') props.close();
+            } catch {
+              /* the shell owns the close affordance */
+            }
+            animateRestoredSession(item.sessionId, previousTops);
+          } catch (error) {
+            applyError(error);
+          } finally {
+            setBusyId('');
+          }
+        },
+        [busyId, props.close, applyError],
+      );
+
+      const purge = React.useCallback(
+        async (item) => {
+          if (confirmPurge !== item.trashId) {
+            setConfirmPurge(item.trashId);
+            return;
+          }
+          setConfirmPurge('');
+          setBusyId(item.trashId);
+          setErrorText('');
+          try {
+            await requestTrash('purge', { trashId: item.trashId });
+            setItems((previous) => previous.filter((entry) => entry.trashId !== item.trashId));
+          } catch (error) {
+            applyError(error);
+          } finally {
+            setBusyId('');
+          }
+        },
+        [confirmPurge, applyError],
+      );
+
+      const empty = React.useCallback(async () => {
+        if (!confirmEmpty) {
+          setConfirmEmpty(true);
+          return;
+        }
+        setConfirmEmpty(false);
+        setBusyId('__empty__');
+        setErrorText('');
+        try {
+          await requestTrash('empty');
+          setItems([]);
+        } catch (error) {
+          applyError(error);
+        } finally {
+          setBusyId('');
+        }
+      }, [confirmEmpty, applyError]);
+
+      const rows = items.map((item) => {
+        const busy = busyId === item.trashId || busyId === '__empty__';
+        const purging = confirmPurge === item.trashId;
+        const workspaceName = item.workspaceTitle || translate('trash.ungrouped');
+        return h(
+          'div',
+          { className: 'dsh-cm-trash-row', key: item.trashId },
+          h(
+            'div',
+            { className: 'dsh-cm-trash-main' },
+            h('div', { className: 'dsh-cm-trash-name', title: item.title || '' }, item.title || translate('trash.ungrouped')),
+            h(
+              'div',
+              { className: 'dsh-cm-trash-meta' },
+              h('span', null, translate('trash.deletedAt').replace('{time}', formatTrashTime(item.deletedAt))),
+              h('span', null, translate('trash.remaining').replace('{days}', String(item.daysLeft))),
+              h('span', null, translate('trash.workspace').replace('{name}', workspaceName)),
+              item.orphaned ? h('span', { className: 'dsh-cm-trash-orphan' }, translate('trash.orphaned')) : null,
+            ),
+          ),
+          h(
+            'div',
+            { className: 'dsh-cm-trash-actions' },
+            h(
+              'button',
+              { type: 'button', className: 'dsh-cm-trash-btn', disabled: busy, onClick: () => restore(item) },
+              translate('trash.restore'),
+            ),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'dsh-cm-trash-btn dsh-cm-trash-danger',
+                disabled: busy,
+                onClick: () => purge(item),
+              },
+              purging ? translate('trash.confirm') : translate('trash.purge'),
+            ),
+          ),
+        );
+      });
+
+      let body = null;
+      if (phase === 'loading') body = h('div', { className: 'dsh-cm-trash-empty' }, translate('trash.loading'));
+      else if (items.length === 0) body = h('div', { className: 'dsh-cm-trash-empty' }, translate('trash.empty'));
+      else body = h('div', { className: 'dsh-cm-trash-list' }, rows);
+
+      return h(
+        'div',
+        { className: 'dsh-cm-trash' },
+        h(
+          'div',
+          { className: 'dsh-cm-trash-head' },
+          h(
+            'div',
+            { className: 'dsh-cm-trash-heading' },
+            h('div', { className: 'dsh-cm-trash-title' }, translate('trash.title')),
+            h('div', { className: 'dsh-cm-trash-sub' }, translate('trash.subtitle')),
+          ),
+          h(
+            'div',
+            { className: 'dsh-cm-trash-toolbar' },
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'dsh-cm-trash-btn',
+                disabled: phase === 'loading' || busyId === '__empty__',
+                onClick: reload,
+              },
+              translate('trash.reload'),
+            ),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'dsh-cm-trash-btn dsh-cm-trash-danger',
+                disabled: items.length === 0 || busyId === '__empty__',
+                onClick: empty,
+              },
+              confirmEmpty ? translate('trash.confirmPurgeAll') : translate('trash.purgeAll'),
+            ),
+          ),
+        ),
+        errorText ? h('div', { className: 'dsh-cm-trash-error' }, errorText) : null,
+        body,
+      );
     }
 
     function MultiSelectOverlay(props) {
@@ -1258,6 +1609,23 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
             ctx.slots.register(
               { name: 'shell.overlay', id: 'dsh-conversation-manager.multi-select', order: 900 },
               Overlay,
+            ),
+          ),
+        );
+
+        // Recycle bin: one page inside Settings; restoring a row closes settings
+        // and plays the insertion animation on the sidebar behind it.
+        const Trash = (props) => h(TrashPage, Object.assign({}, props, { translate }));
+        track(() =>
+          ctx.slots.inject('settings.section', () =>
+            ctx.slots.register(
+              {
+                name: 'settings.section',
+                id: 'dsh-conversation-manager.trash',
+                order: 60,
+                label: () => translate('trash.section'),
+              },
+              Trash,
             ),
           ),
         );

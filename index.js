@@ -26,6 +26,7 @@
  * resident can flush its log back to disk after the delete, so a small sweeper
  * keeps removing that copy and keeps the row off every open page.
  */
+import { randomUUID } from 'node:crypto';
 import { promises as fsp } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -509,6 +510,416 @@ async function forgetInRegistry(ctx, sessionId) {
   return { detached };
 }
 
+/* -------------------------------------------------------------------------- *
+ * Recycle bin.
+ *
+ * Deleting no longer wipes the store: the session directory is moved into
+ * `<DSH_HOME>/storages/conversation-manager/trash/<trashId>/payload-N`, together
+ * with a `meta.json` that keeps everything needed to restore it (original path,
+ * projection-cache snapshot, original workspace). Entries expire after 30 days
+ * and are purged on start, hourly, and whenever the bin is opened.
+ * -------------------------------------------------------------------------- */
+
+const TRASH_ROUTE = '/api/conversation-manager/trash';
+const TRASH_VERSION = 1;
+const TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const SAFE_TRASH_ID = /^[A-Za-z0-9][A-Za-z0-9-]{7,63}$/;
+
+const trashRoot = () => path.join(dshHome(), 'storages', 'conversation-manager', 'trash');
+const trashEntryDir = (trashId) => path.join(trashRoot(), trashId);
+const trashMetaPath = (trashId) => path.join(trashEntryDir(trashId), 'meta.json');
+
+async function readTrashMeta(trashId) {
+  if (!SAFE_TRASH_ID.test(trashId)) return null;
+  try {
+    const parsed = JSON.parse(await fsp.readFile(trashMetaPath(trashId), 'utf8'));
+    return parsed && typeof parsed === 'object' && parsed.trashId === trashId ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeTrashMeta(trashId, meta) {
+  const dir = trashEntryDir(trashId);
+  await fsp.mkdir(dir, { recursive: true });
+  const temp = path.join(dir, `meta.json.${process.pid}.tmp`);
+  await fsp.writeFile(temp, JSON.stringify(meta, null, 2), 'utf8');
+  await fsp.rename(temp, trashMetaPath(trashId));
+}
+
+/** Move a directory, falling back to a copy when the two paths are on different volumes. */
+async function movePath(from, to) {
+  try {
+    await fsp.rename(from, to);
+    return;
+  } catch (error) {
+    if (error?.code !== 'EXDEV') throw error;
+  }
+  await fsp.cp(from, to, { recursive: true });
+  await fsp.rm(from, { recursive: true, force: true });
+}
+
+async function directorySize(dir) {
+  let total = 0;
+  const stack = [dir];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    let entries = [];
+    try {
+      entries = await fsp.readdir(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) stack.push(full);
+      else if (entry.isFile()) {
+        try {
+          total += (await fsp.stat(full)).size;
+        } catch {
+          /* a file that vanished mid-walk contributes nothing */
+        }
+      }
+    }
+  }
+  return total;
+}
+
+async function findProjectionCache(sessionId) {
+  const cacheDir = path.join(dshHome(), 'storages', 'session_projcache', 'sessions');
+  for (const name of new Set([`${sessionId}.json`, `${encodeSegment(sessionId)}.json`])) {
+    try {
+      return { name, text: await fsp.readFile(path.join(cacheDir, name), 'utf8') };
+    } catch {
+      /* try the other spelling */
+    }
+  }
+  return null;
+}
+
+async function writeProjectionCache(name, text) {
+  try {
+    const cacheDir = path.join(dshHome(), 'storages', 'session_projcache', 'sessions');
+    await fsp.mkdir(cacheDir, { recursive: true });
+    await fsp.writeFile(path.join(cacheDir, name), text, 'utf8');
+  } catch (error) {
+    warn('projection-cache restore failed', name, textOf(error));
+  }
+}
+
+function workspaceInfoOf(ctx, sessionId) {
+  const registry = service(ctx, 'workspaceRegistry');
+  if (!registry || typeof registry.list !== 'function') return null;
+  for (const workspace of registry.list()) {
+    if (Array.isArray(workspace?.sessionIds) && workspace.sessionIds.includes(sessionId)) {
+      return { id: workspace.id, title: typeof workspace.title === 'string' ? workspace.title : '' };
+    }
+  }
+  return null;
+}
+
+/** Move one deleted session into the recycle bin; records everything restore needs. */
+async function moveSessionToTrash(ctx, sessionId, targets, title) {
+  const trashId = randomUUID();
+  const dir = trashEntryDir(trashId);
+  await fsp.mkdir(dir, { recursive: true });
+  const workspace = workspaceInfoOf(ctx, sessionId);
+  const cache = await findProjectionCache(sessionId);
+  const meta = {
+    version: TRASH_VERSION,
+    trashId,
+    sessionId,
+    title: typeof title === 'string' && title.trim().length > 0 ? title.trim() : '',
+    deletedAt: Date.now(),
+    workspaceId: workspace?.id,
+    workspaceTitle: workspace?.title,
+    projcacheName: cache?.name,
+    projcache: cache?.text ?? null,
+    movers: [],
+    size: 0,
+    state: 'pending',
+  };
+  await writeTrashMeta(trashId, meta);
+  const moved = [];
+  try {
+    for (let index = 0; index < targets.length; index += 1) {
+      const stored = `payload-${index}`;
+      await movePath(targets[index], path.join(dir, stored));
+      meta.movers.push({ stored, originalPath: targets[index] });
+      moved.push({ stored, originalPath: targets[index] });
+      await writeTrashMeta(trashId, meta);
+    }
+  } catch (error) {
+    for (const mover of moved.reverse()) {
+      try {
+        await movePath(path.join(dir, mover.stored), mover.originalPath);
+      } catch {
+        /* best-effort rollback */
+      }
+    }
+    try {
+      await fsp.rm(dir, { recursive: true, force: true });
+    } catch {
+      /* leave the broken entry for the next purge */
+    }
+    throw new RequestError(409, '移入回收站失败：' + textOf(error));
+  }
+  if (cache) await fsp.rm(path.join(dshHome(), 'storages', 'session_projcache', 'sessions', cache.name), { force: true }).catch(() => {});
+  meta.size = await directorySize(dir);
+  meta.state = 'done';
+  await writeTrashMeta(trashId, meta);
+  return meta;
+}
+
+async function purgeTrashEntry(trashId) {
+  try {
+    await fsp.rm(trashEntryDir(trashId), { recursive: true, force: true, maxRetries: 8, retryDelay: 150 });
+  } catch (error) {
+    throw new RequestError(409, '彻底删除失败：' + textOf(error));
+  }
+}
+
+async function purgeExpiredTrash(ctx) {
+  const root = trashRoot();
+  let names = [];
+  try {
+    names = await fsp.readdir(root, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  const now = Date.now();
+  let purged = 0;
+  for (const entry of names) {
+    if (!entry.isDirectory() || !SAFE_TRASH_ID.test(entry.name)) continue;
+    const meta = await readTrashMeta(entry.name);
+    if (!meta) continue;
+    if (now - (Number(meta.deletedAt) || 0) <= TRASH_RETENTION_MS) continue;
+    try {
+      await fsp.rm(trashEntryDir(entry.name), { recursive: true, force: true });
+      purged += 1;
+    } catch (error) {
+      warn('trash expiry purge failed', entry.name, textOf(error));
+    }
+  }
+  return purged;
+}
+
+async function listTrash(ctx) {
+  await purgeExpiredTrash(ctx);
+  const root = trashRoot();
+  let names = [];
+  try {
+    names = await fsp.readdir(root, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const workspaceIds = new Set();
+  const registry = service(ctx, 'workspaceRegistry');
+  if (registry && typeof registry.list === 'function') {
+    for (const workspace of registry.list()) if (workspace?.id) workspaceIds.add(workspace.id);
+  }
+  const now = Date.now();
+  const items = [];
+  for (const entry of names) {
+    if (!entry.isDirectory() || !SAFE_TRASH_ID.test(entry.name)) continue;
+    const meta = await readTrashMeta(entry.name);
+    if (!meta || meta.state !== 'done') continue;
+    const deletedAt = Number(meta.deletedAt) || now;
+    const expiresAt = deletedAt + TRASH_RETENTION_MS;
+    items.push({
+      trashId: meta.trashId,
+      sessionId: meta.sessionId,
+      title: typeof meta.title === 'string' && meta.title.length > 0 ? meta.title : '',
+      deletedAt,
+      expiresAt,
+      daysLeft: Math.max(0, Math.ceil((expiresAt - now) / 86_400_000)),
+      size: Number(meta.size) || 0,
+      workspaceId: meta.workspaceId ?? null,
+      workspaceTitle: typeof meta.workspaceTitle === 'string' ? meta.workspaceTitle : '',
+      orphaned: Boolean(meta.workspaceId && !workspaceIds.has(meta.workspaceId)),
+    });
+  }
+  items.sort((left, right) => right.deletedAt - left.deletedAt);
+  return items;
+}
+
+/** Drop a tombstone so the sweeper stops deleting the store we just restored. */
+async function forgetDeleted(ctx, sessionId) {
+  await loadDeleted();
+  if (!deletedIds.has(sessionId)) return;
+  deletedIds.delete(sessionId);
+  await saveDeleted();
+}
+
+/** Rebuild the list summary the Host would send for this cold session. */
+async function summarizeRestored(ctx, meta) {
+  let header;
+  try {
+    const snapshot = await service(ctx, 'sessionPersistence')?.stat?.(meta.sessionId);
+    header = snapshot?.header ?? snapshot;
+  } catch {
+    header = undefined;
+  }
+  const values = {};
+  if (typeof meta.projcache === 'string') {
+    try {
+      const parsed = JSON.parse(meta.projcache);
+      const rows = parsed?.record?.rows ?? {};
+      for (const key of ['title', 'sessionListMetadata', 'agentPreset', 'permissions', 'workingDirectory']) {
+        if (rows?.[key]?.val !== undefined) values[key] = rows[key].val;
+      }
+    } catch {
+      /* a corrupt checkpoint only costs the row its title until it reopens */
+    }
+  }
+  if (values.title === undefined && meta.title) values.title = meta.title;
+  const metadata = values.sessionListMetadata ?? {};
+  const blank = metadata.blank === true;
+  const lastPromptAt = Number(metadata.lastPromptAt) || 0;
+  const createdAt = Number(header?.createdAt) || Number(meta.deletedAt) || Date.now();
+  const summary = {
+    sessionId: meta.sessionId,
+    updatedAt: Math.max(createdAt, lastPromptAt),
+    agentAvailable: false,
+    formatStatus: 'current',
+    running: false,
+    blank,
+  };
+  if (typeof header?.cwd === 'string') summary.cwd = header.cwd;
+  if (header?.origin !== undefined) summary.origin = header.origin;
+  if (header?.parentSession !== undefined) summary.parentSessionId = header.parentSession;
+  if (Object.keys(values).length > 0) summary.projections = { kind: 'cached', values };
+  return summary;
+}
+
+/** Move one bin entry back to its original path and tell the pages it is listed again. */
+async function restoreTrashEntry(ctx, trashId) {
+  const meta = await readTrashMeta(trashId);
+  if (!meta) throw new RequestError(404, '回收站里没有这条记录');
+  const deletedAt = Number(meta.deletedAt) || 0;
+  if (deletedAt + TRASH_RETENTION_MS < Date.now()) {
+    await purgeTrashEntry(trashId);
+    throw new RequestError(410, '这条记录已超过 30 天，无法恢复');
+  }
+  if (meta.state !== 'done' || !Array.isArray(meta.movers) || meta.movers.length === 0) {
+    throw new RequestError(409, '回收站数据不完整，无法恢复');
+  }
+  for (const mover of meta.movers) {
+    if (!mover || typeof mover.stored !== 'string' || typeof mover.originalPath !== 'string') {
+      throw new RequestError(409, '回收站数据不完整，无法恢复');
+    }
+    if (!(await isDirectory(path.join(trashEntryDir(trashId), mover.stored)))) {
+      throw new RequestError(422, '回收站数据缺失，无法恢复');
+    }
+    if (await isDirectory(mover.originalPath)) {
+      throw new RequestError(409, '原位置已存在同名会话数据，无法恢复');
+    }
+  }
+  await forgetDeleted(ctx, meta.sessionId);
+  const restored = [];
+  try {
+    for (const mover of meta.movers) {
+      await fsp.mkdir(path.dirname(mover.originalPath), { recursive: true });
+      await movePath(path.join(trashEntryDir(trashId), mover.stored), mover.originalPath);
+      restored.push(mover);
+    }
+  } catch (error) {
+    for (const mover of restored.reverse()) {
+      try {
+        await movePath(mover.originalPath, path.join(trashEntryDir(trashId), mover.stored));
+      } catch {
+        /* best-effort rollback */
+      }
+    }
+    throw new RequestError(409, '恢复失败：' + textOf(error));
+  }
+  if (typeof meta.projcache === 'string' && typeof meta.projcacheName === 'string' && meta.projcacheName.endsWith('.json')) {
+    await writeProjectionCache(meta.projcacheName, meta.projcache);
+  }
+  const registry = service(ctx, 'workspaceRegistry');
+  try {
+    await registry?.unarchiveSession?.(meta.sessionId);
+  } catch {
+    /* not archived */
+  }
+  try {
+    await registry?.unpinSession?.(meta.sessionId);
+  } catch {
+    /* not pinned */
+  }
+  const summary = await summarizeRestored(ctx, meta);
+  try {
+    if (typeof ctx.emit === 'function') ctx.emit('api-session/added', summary);
+  } catch (error) {
+    warn('restore announcement failed', meta.sessionId, textOf(error));
+  }
+  try {
+    await fsp.rm(trashEntryDir(trashId), { recursive: true, force: true });
+  } catch (error) {
+    warn('trash cleanup failed', trashId, textOf(error));
+  }
+  return { sessionId: meta.sessionId, title: meta.title, summary };
+}
+
+async function handleTrash(ctx, request) {
+  if (request.method !== 'POST') return fail(405, '请使用 POST');
+  const contentType = (request.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+  if (contentType !== 'application/json' || request.headers.get(ACTION_HEADER) !== '1') {
+    return fail(403, '请从设置里的回收站操作');
+  }
+  const denied = originVerdict(request);
+  if (denied) return denied;
+  let body;
+  try {
+    body = await readJson(request);
+  } catch (error) {
+    return fail(error?.status || 400, textOf(error));
+  }
+  const action = typeof body?.action === 'string' ? body.action : '';
+  try {
+    if (action === 'list') {
+      return json(200, { ok: true, items: await listTrash(ctx), retentionDays: 30 });
+    }
+    if (action === 'restore') {
+      const trashId = typeof body?.trashId === 'string' ? body.trashId.trim() : '';
+      if (!SAFE_TRASH_ID.test(trashId)) return fail(400, '无效的回收站 ID');
+      const result = await restoreTrashEntry(ctx, trashId);
+      return json(200, { ok: true, sessionId: result.sessionId, title: result.title });
+    }
+    if (action === 'purge') {
+      const trashId = typeof body?.trashId === 'string' ? body.trashId.trim() : '';
+      if (!SAFE_TRASH_ID.test(trashId)) return fail(400, '无效的回收站 ID');
+      if (!(await readTrashMeta(trashId))) return fail(404, '回收站里没有这条记录');
+      await purgeTrashEntry(trashId);
+      return json(200, { ok: true, trashId });
+    }
+    if (action === 'empty') {
+      const root = trashRoot();
+      let names = [];
+      try {
+        names = await fsp.readdir(root, { withFileTypes: true });
+      } catch {
+        return json(200, { ok: true, purged: 0 });
+      }
+      let purged = 0;
+      for (const entry of names) {
+        if (!entry.isDirectory() || !SAFE_TRASH_ID.test(entry.name)) continue;
+        try {
+          await fsp.rm(trashEntryDir(entry.name), { recursive: true, force: true });
+          purged += 1;
+        } catch (error) {
+          warn('trash empty failed', entry.name, textOf(error));
+        }
+      }
+      return json(200, { ok: true, purged });
+    }
+    return fail(400, '未知操作');
+  } catch (error) {
+    warn('trash action failed', action, textOf(error));
+    return fail(error?.status || 500, textOf(error));
+  }
+}
+
 async function handleDelete(ctx, request) {
   if (request.method !== 'POST') return fail(405, '请使用 POST');
   const contentType = (request.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
@@ -549,26 +960,14 @@ async function handleDelete(ctx, request) {
         announced,
       });
     }
-    // Stop any running work and hide the row before the store goes away; a live
-    // agent would otherwise keep writing to the directory being removed.
-    const hidden = await hideSession(ctx, sessionId);
-    let storage;
-    try {
-      storage = await removeStorage(ctx, sessionId, targets);
-    } catch (error) {
-      if (hidden) {
-        try {
-          await service(ctx, 'workspaceRegistry')?.unarchiveSession?.(sessionId);
-        } catch {
-          /* keep the row hidden rather than resurrect a half-deleted row */
-        }
-      }
-      throw error;
-    }
+    // Delete is recoverable now: the store is moved into the recycle bin with a
+    // meta record instead of being wiped, and the row is detached from the list.
+    const title = typeof body?.title === 'string' ? body.title : '';
+    const trashed = await moveSessionToTrash(ctx, sessionId, targets, title);
     const cleanup = await forgetInRegistry(ctx, sessionId);
     // Remember the deletion: a resident session can flush its log back to disk
-    // after this point, and the sweeper removes that copy again.
-    await rememberDeleted(ctx, sessionId, storage.targets);
+    // after the move, and the sweeper removes that copy again.
+    await rememberDeleted(ctx, sessionId, targets);
     // A still-live container can recreate the store right after removal; sweep
     // once more so "deleted" is not undone by a late flush.
     let swept = 0;
@@ -584,30 +983,17 @@ async function handleDelete(ctx, request) {
         break;
       }
     }
-    // Drop the row from every open page, then clear the hiding marker so the
-    // conversation is not left sitting in the archived view.
     const announced = announceRemoval(ctx, sessionId);
-    let archived = hidden;
-    if (hidden && announced) {
-      // Let the removal reach the page before the archive set changes again.
-      await new Promise((resolve) => setTimeout(resolve, 120));
-      try {
-        await service(ctx, 'workspaceRegistry')?.unarchiveSession?.(sessionId);
-        archived = false;
-      } catch (error) {
-        warn('clearing archive marker failed', sessionId, textOf(error));
-      }
-    }
-    if (archived) await writeJournal([...(await readJournal()), sessionId]);
     return json(200, {
       ok: true,
       sessionId,
-      removedGroups: storage.targets.length,
-      removedPaths: storage.removed.length,
+      trashed: true,
+      trashId: trashed.trashId,
+      expiresAt: trashed.deletedAt + TRASH_RETENTION_MS,
+      removedGroups: targets.length,
+      removedPaths: targets.length,
       swept,
       detached: cleanup.detached,
-      hidden,
-      archived,
       announced,
     });
   } catch (error) {
@@ -634,6 +1020,17 @@ export function apply(ctx) {
     } catch (error) {
       warn('route registration failed', textOf(error));
     }
+    try {
+      const dispose = carrier.register({
+        path: TRASH_ROUTE,
+        methods: ['POST'],
+        requestBody: 'buffered',
+        fetch: (request) => handleTrash(ctx, request),
+      });
+      if (typeof dispose?.catch === 'function') dispose.catch((error) => warn('trash route registration failed', textOf(error)));
+    } catch (error) {
+      warn('trash route registration failed', textOf(error));
+    }
   };
   if (typeof ctx.inject === 'function') ctx.inject(['connection'], install);
   else install(ctx);
@@ -642,7 +1039,9 @@ export function apply(ctx) {
   // app was closed) and keep the sweeper running.
   try {
     const timer = setTimeout(() => {
-      loadDeleted()
+      purgeExpiredTrash(ctx)
+        .catch((error) => warn('trash expiry failed', textOf(error)))
+        .then(() => loadDeleted())
         .then(() => enforceDeleted(ctx))
         .then(() => startEnforcement(ctx))
         .then(() => pruneArchivedGhosts(ctx))
@@ -651,5 +1050,14 @@ export function apply(ctx) {
     timer?.unref?.();
   } catch (error) {
     warn('prune scheduling failed', textOf(error));
+  }
+  // The bin is fixed at 30 days; an hourly pass is enough for a foreground app.
+  try {
+    const timer = setInterval(() => {
+      purgeExpiredTrash(ctx).catch((error) => warn('trash expiry failed', textOf(error)));
+    }, 60 * 60 * 1000);
+    timer?.unref?.();
+  } catch (error) {
+    warn('trash expiry scheduling failed', textOf(error));
   }
 }

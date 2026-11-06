@@ -1,7 +1,7 @@
 {
   "name": "@logic-dante/dsh-conversation-manager",
-  "version": "1.5.6",
-  "description": "Delete unwanted conversations straight from the sidebar session menu, including their on-disk session store.",
+  "version": "1.6.0",
+  "description": "Delete unwanted conversations from the sidebar with multi-select and a 30-day recycle bin that can restore them.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/lloggc-Dante/dsh-conversation-manager.git"
@@ -32,12 +32,15 @@
     "client": {
       "inject": [
         "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-ui-workspace"
+        "@deepseek-ai/dsh-client-ui-workspace",
+        "@deepseek-ai/dsh-client-ui-settings"
       ],
       "platform": "web"
     }
   }
 }
+
+
 
 
 
