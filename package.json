@@ -1,6 +1,6 @@
 {
   "name": "@logic-dante/dsh-conversation-manager",
-  "version": "1.5.2",
+  "version": "1.5.3",
   "description": "Delete unwanted conversations straight from the sidebar session menu, including their on-disk session store.",
   "repository": {
     "type": "git",
@@ -38,6 +38,7 @@
     }
   }
 }
+
 
 
 

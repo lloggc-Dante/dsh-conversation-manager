@@ -419,6 +419,9 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] > span:first-
   pointer-events: none; z-index: 2;
 }
 html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background: var(--dsw-alias-bg-layer-2, rgba(127,127,127,.12)); }
+/* Multi-delete collapses every removed row at once, so the list below jumps up
+   in one step instead of reflowing once per Host removal. */
+[data-dsh-cm-removing] { display: none !important; }
 
 .dsh-cm-toggle {
   position: fixed; display: flex; align-items: center; justify-content: center;
@@ -759,12 +762,21 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
           }
         }
         if (effects.size > 0) await new Promise((resolve) => window.setTimeout(resolve, REMOVAL_MS));
+        // The rows are invisible once the choreography ends, but they still hold
+        // their space. Drop them all in the same frame so the list below jumps up
+        // once, instead of stepping up again for every per-session removal.
+        for (const id of ids) {
+          const row = findRowElement(id);
+          if (row) row.setAttribute('data-dsh-cm-removing', '');
+        }
         const failures = [];
         for (const id of ids) {
           try {
             await requestDelete(id);
           } catch (error) {
             failures.push(error && error.message ? error.message : String(error));
+            const row = findRowElement(id);
+            if (row) row.removeAttribute('data-dsh-cm-removing');
             const effect = effects.get(id);
             if (effect) {
               try {
