@@ -157,18 +157,23 @@ window.__ModuleLoader__.load({
      */
     function findTitleElement(row, displayTitle) {
       const title = typeof displayTitle === 'string' ? displayTitle.replace(/\s+/g, ' ').trim() : '';
-      if (!title || typeof row.querySelectorAll !== 'function') return null;
+      if (typeof row.querySelectorAll !== 'function') return null;
       const nodes = row.querySelectorAll('span, div, p, a, button');
       let exact = null;
       let containing = null;
+      let longest = null;
       for (const node of nodes) {
         if (node === row) continue;
         if (node.children && node.children.length > 0) continue;
         const text = (node.textContent || '').replace(/\s+/g, ' ').trim();
-        if (text === title) exact = node;
-        else if (!containing && text.indexOf(title) !== -1) containing = node;
+        if (!text) continue;
+        if (title && text === title) exact = node;
+        else if (title && !containing && text.indexOf(title) !== -1) containing = node;
+        if (!longest || text.length > longest.length) longest = { node, length: text.length };
       }
-      return exact || containing;
+      // The menu can hand over a raw title that differs from the rendered text;
+      // the longest leaf is the title in that case (the timestamp is shorter).
+      return exact || containing || (longest ? longest.node : null);
     }
 
     /** The first text node below `element` that contains `title`. */
@@ -1011,8 +1016,11 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
           // Host to delete. Animating in place only works while the row is still
           // mounted, so the POST waits for the effect to settle.
           const title = typeof props.displayTitle === 'string' ? props.displayTitle : '';
-          const row = findSessionRow(title);
-          const effect = row ? startRemovalAnimation(row, title) : null;
+          // Prefer the Session id the row carries: the menu's display title can
+          // differ from the rendered row text (fallback names, escaping), which
+          // used to make the lookup miss and skip the animation entirely.
+          const row = findRowElement(sessionId) || findSessionRow(title);
+          const effect = row ? startRemovalAnimation(row, rowTitleText(row) || title) : null;
           // Clear the menu once the strike has landed, so the exit animation is not
           // hidden behind the popup.
           if (effect) window.setTimeout(dismissMenu, STRIKE_MS);
