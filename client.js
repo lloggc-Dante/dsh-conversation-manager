@@ -908,6 +908,15 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
           return;
         }
         if (attempts < 120) window.requestAnimationFrame(step);
+        else {
+          // Safety net: the Host announcement was the only way to insert the row
+          // without a reload; if it did not arrive, fall back to a real list pull.
+          try {
+            window.location.reload();
+          } catch {
+            /* reload unavailable */
+          }
+        }
       };
       window.requestAnimationFrame(step);
     }

@@ -761,12 +761,26 @@ async function summarizeRestored(ctx, meta) {
     header = undefined;
   }
   const values = {};
+  let asOfSeq = 0;
+  const summaryKeys = new Set();
+  try {
+    const projections = service(ctx, 'sessionProjections');
+    const keys = typeof projections?.summaryKeys === 'function' ? projections.summaryKeys() : [];
+    if (Array.isArray(keys)) for (const key of keys) summaryKeys.add(key);
+  } catch {
+    /* the summary schema stays open when the projection service is absent */
+  }
   if (typeof meta.projcache === 'string') {
     try {
       const parsed = JSON.parse(meta.projcache);
       const rows = parsed?.record?.rows ?? {};
       for (const key of ['title', 'sessionListMetadata', 'agentPreset', 'permissions', 'workingDirectory']) {
-        if (rows?.[key]?.val !== undefined) values[key] = rows[key].val;
+        if (summaryKeys.size > 0 && !summaryKeys.has(key)) continue;
+        const row = rows?.[key];
+        if (row?.val === undefined) continue;
+        values[key] = row.val;
+        const seq = Number(row.seq);
+        if (Number.isFinite(seq)) asOfSeq = Math.max(asOfSeq, seq);
       }
     } catch {
       /* a corrupt checkpoint only costs the row its title until it reopens */
@@ -788,7 +802,10 @@ async function summarizeRestored(ctx, meta) {
   if (typeof header?.cwd === 'string') summary.cwd = header.cwd;
   if (header?.origin !== undefined) summary.origin = header.origin;
   if (header?.parentSession !== undefined) summary.parentSessionId = header.parentSession;
-  if (Object.keys(values).length > 0) summary.projections = { kind: 'cached', values };
+  // `SessionProjectionHints` requires a watermark even for cached hints; the
+  // client ignores it on the cached path but the event schema rejects a summary
+  // without it, which is why a restored row never reached the sidebar.
+  if (Object.keys(values).length > 0) summary.projections = { kind: 'cached', asOfSeq, values };
   return summary;
 }
 
