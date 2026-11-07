@@ -1,6 +1,6 @@
 {
   "name": "@logic-dante/dsh-conversation-manager",
-  "version": "1.6.1",
+  "version": "1.6.2",
   "description": "Delete unwanted conversations from the sidebar with multi-select and a 30-day recycle bin that can restore them.",
   "repository": {
     "type": "git",
@@ -39,6 +39,7 @@
     }
   }
 }
+
 
 
 

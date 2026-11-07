@@ -843,12 +843,18 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
     }
 
     /** Positions of every sidebar row, used as the FLIP "before" snapshot. */
+    /** Rows sit in a scroll container, so page coordinates are scroll-independent. */
+    function rowTopOf(node) {
+      if (typeof node.offsetTop === 'number' && Number.isFinite(node.offsetTop)) return node.offsetTop;
+      return node.getBoundingClientRect().top;
+    }
+
     function snapshotRowTops() {
       const tops = new Map();
       if (typeof document === 'undefined') return tops;
       for (const node of document.querySelectorAll('[data-row-key]')) {
         try {
-          tops.set(node, node.getBoundingClientRect().top);
+          tops.set(node, rowTopOf(node));
         } catch {
           /* unmeasurable rows are skipped */
         }
@@ -864,7 +870,7 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
         if (before === undefined) continue;
         let delta = 0;
         try {
-          delta = before - node.getBoundingClientRect().top;
+          delta = before - rowTopOf(node);
         } catch {
           continue;
         }
@@ -884,30 +890,68 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
       }
     }
 
-    /** Flash the row that just came back and let the list make room for it. */
+    /** Is a modal (the Settings panel) still covering the sidebar? */
+    function modalOpen() {
+      try {
+        if (typeof document === 'undefined' || typeof document.querySelector !== 'function') return false;
+        return Boolean(document.querySelector('[role="dialog"][aria-modal="true"]'));
+      } catch {
+        return false;
+      }
+    }
+
+    /** Bring the restored row into view, flash it, and let the list make room. */
     function animateRestoredSession(sessionId, previousTops) {
       if (typeof window === 'undefined' || typeof document === 'undefined') return;
-      let attempts = 0;
+      let frames = 0;
+      let waitedForModal = 0;
       const step = () => {
-        attempts += 1;
+        frames += 1;
         const row = findRowElement(sessionId);
         if (row) {
-          animateRowsFrom(previousTops);
-          try {
-            row.setAttribute('data-dsh-cm-restored', '');
-            window.setTimeout(() => {
-              try {
-                row.removeAttribute('data-dsh-cm-restored');
-              } catch {
-                /* the row may have unmounted */
-              }
-            }, 1600);
-          } catch {
-            /* the row may have unmounted */
+          // Settings may still be fading out over the sidebar; wait for it, but
+          // never block the animation forever if the shell keeps the dialog.
+          if (modalOpen() && waitedForModal < 40) {
+            waitedForModal += 1;
+            window.requestAnimationFrame(step);
+            return;
           }
+          try {
+            if (typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'nearest' });
+          } catch {
+            /* scrolling is best effort */
+          }
+          window.requestAnimationFrame(() => {
+            animateRowsFrom(previousTops);
+            try {
+              if (typeof row.animate === 'function') {
+                row.animate(
+                  [
+                    { opacity: 0, transform: 'translate3d(0, -6px, 0)' },
+                    { opacity: 1, transform: 'translate3d(0, 0, 0)' },
+                  ],
+                  { duration: 360, easing: 'cubic-bezier(0.65, 0, 0.35, 1)' },
+                );
+              }
+            } catch {
+              /* motion is optional */
+            }
+            try {
+              row.setAttribute('data-dsh-cm-restored', '');
+              window.setTimeout(() => {
+                try {
+                  row.removeAttribute('data-dsh-cm-restored');
+                } catch {
+                  /* the row may have unmounted */
+                }
+              }, 1700);
+            } catch {
+              /* the row may have unmounted */
+            }
+          });
           return;
         }
-        if (attempts < 120) window.requestAnimationFrame(step);
+        if (frames < 120) window.requestAnimationFrame(step);
         else {
           // Safety net: the Host announcement was the only way to insert the row
           // without a reload; if it did not arrive, fall back to a real list pull.
