@@ -618,6 +618,73 @@ function workspaceInfoOf(ctx, sessionId) {
   return null;
 }
 
+/** The stored header of a session, live or cold. */
+async function sessionHeaderOf(ctx, sessionId) {
+  try {
+    const snapshot = await service(ctx, 'sessionPersistence')?.stat?.(sessionId);
+    return snapshot?.header ?? snapshot;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Windows compares paths case-insensitively; normalise before matching. */
+function normalisePath(value) {
+  try {
+    return path.resolve(String(value)).replace(/[\\/]+$/, '').toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Workspaces a session could live in. The host only attaches a session to a
+ * workspace whose path equals the session header's cwd, so the list carries
+ * that compatibility flag for the client to explain.
+ */
+async function workspaceCandidates(ctx, sessionId) {
+  const registry = service(ctx, 'workspaceRegistry');
+  if (!registry || typeof registry.list !== 'function') return [];
+  const header = await sessionHeaderOf(ctx, sessionId);
+  const cwd = typeof header?.cwd === 'string' ? normalisePath(header.cwd) : '';
+  const items = [];
+  for (const workspace of registry.list()) {
+    if (!workspace?.id) continue;
+    const workspacePath = typeof workspace.path === 'string' ? workspace.path : '';
+    items.push({
+      id: workspace.id,
+      title: typeof workspace.title === 'string' && workspace.title.length > 0 ? workspace.title : workspacePath,
+      path: workspacePath,
+      current: Array.isArray(workspace.sessionIds) && workspace.sessionIds.includes(sessionId),
+      compatible: Boolean(cwd && workspacePath && normalisePath(workspacePath) === cwd),
+    });
+  }
+  return items;
+}
+
+/** Attach one session to a workspace, ahead of its other sessions. */
+async function moveSessionToWorkspace(ctx, sessionId, workspaceId) {
+  const registry = service(ctx, 'workspaceRegistry');
+  if (!registry || typeof registry.list !== 'function') throw new RequestError(503, '工作区服务不可用');
+  const workspace = registry.list().find((candidate) => candidate?.id === workspaceId);
+  if (!workspace) throw new RequestError(404, '工作区不存在');
+  if (Array.isArray(workspace.sessionIds) && workspace.sessionIds.includes(sessionId)) {
+    return { moved: false, workspaceId };
+  }
+  if (typeof workspace.attachSession !== 'function') throw new RequestError(503, '这个工作区不支持挂载对话');
+  try {
+    await workspace.attachSession(sessionId);
+  } catch (error) {
+    throw new RequestError(409, '无法移动到该工作区：' + textOf(error));
+  }
+  try {
+    await workspace.insertSessionBefore?.(sessionId);
+  } catch (error) {
+    warn('insertSessionBefore failed', sessionId, textOf(error));
+  }
+  return { moved: true, workspaceId };
+}
+
 /** Move one deleted session into the recycle bin; records everything restore needs. */
 async function moveSessionToTrash(ctx, sessionId, targets, title) {
   const trashId = randomUUID();
@@ -864,6 +931,19 @@ async function restoreTrashEntry(ctx, trashId) {
   } catch {
     /* not pinned */
   }
+  // Put it back into its original workspace when that workspace still exists and
+  // its path still matches the session's cwd (the Host validates exactly that).
+  if (typeof meta.workspaceId === 'string' && meta.workspaceId.length > 0) {
+    try {
+      const candidates = await workspaceCandidates(ctx, meta.sessionId);
+      const original = candidates.find((candidate) => candidate.id === meta.workspaceId);
+      if (original && original.compatible && !original.current) {
+        await moveSessionToWorkspace(ctx, meta.sessionId, meta.workspaceId);
+      }
+    } catch (error) {
+      warn('restore reattach failed', meta.sessionId, textOf(error));
+    }
+  }
   const summary = await summarizeRestored(ctx, meta);
   try {
     if (typeof ctx.emit === 'function') ctx.emit('api-session/added', summary);
@@ -929,6 +1009,19 @@ async function handleTrash(ctx, request) {
         }
       }
       return json(200, { ok: true, purged });
+    }
+    if (action === 'workspaces') {
+      const sessionId = typeof body?.sessionId === 'string' ? body.sessionId.trim() : '';
+      if (!SAFE_ID.test(sessionId) || sessionId.includes('..')) return fail(400, '无效的会话 ID');
+      return json(200, { ok: true, items: await workspaceCandidates(ctx, sessionId) });
+    }
+    if (action === 'move') {
+      const sessionId = typeof body?.sessionId === 'string' ? body.sessionId.trim() : '';
+      const workspaceId = typeof body?.workspaceId === 'string' ? body.workspaceId.trim() : '';
+      if (!SAFE_ID.test(sessionId) || sessionId.includes('..')) return fail(400, '无效的会话 ID');
+      if (!SAFE_ID.test(workspaceId) || workspaceId.includes('..')) return fail(400, '无效的工作区 ID');
+      const result = await moveSessionToWorkspace(ctx, sessionId, workspaceId);
+      return json(200, { ok: true, sessionId, workspaceId: result.workspaceId, moved: result.moved });
     }
     return fail(400, '未知操作');
   } catch (error) {

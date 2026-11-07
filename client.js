@@ -52,6 +52,16 @@ window.__ModuleLoader__.load({
       'trash.orphaned': '原工作区已删除，恢复后进入未分组',
       'trash.error': '操作失败：{message}',
       'trash.size': '{size}',
+      'move.label': '移动到工作区…',
+      'move.title': '移动到工作区',
+      'move.subtitle': '只有路径与会话目录一致的工作区可以收纳这个对话。',
+      'move.empty': '没有路径匹配的工作区。',
+      'move.current': '已在该工作区',
+      'move.incompatible': '目录不匹配',
+      'move.cancel': '取消',
+      'move.busy': '正在移动…',
+      'move.failed': '移动失败：{message}',
+      'move.done': '已移动',
     };
 
     const dictionaries = {
@@ -92,6 +102,16 @@ window.__ModuleLoader__.load({
         'trash.orphaned': 'Its workspace was deleted; it will come back ungrouped',
         'trash.error': 'Action failed: {message}',
         'trash.size': '{size}',
+        'move.label': 'Move to workspace…',
+        'move.title': 'Move to workspace',
+        'move.subtitle': 'Only a workspace whose path matches the conversation folder can take it.',
+        'move.empty': 'No workspace matches this conversation folder.',
+        'move.current': 'Already in this workspace',
+        'move.incompatible': 'Folder mismatch',
+        'move.cancel': 'Cancel',
+        'move.busy': 'Moving…',
+        'move.failed': 'Move failed: {message}',
+        'move.done': 'Moved',
       },
     };
 
@@ -604,6 +624,35 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
   100% { background: transparent; }
 }
 [data-dsh-cm-restored] { animation: dsh-cm-restore-flash 1.3s cubic-bezier(0.65, 0, 0.35, 1); }
+
+/* ------------------------------------------------------------------ *
+ * Move-to-workspace dialog.
+ * ------------------------------------------------------------------ */
+.dsh-cm-move-session {
+  margin-top: 8px; font-size: 12px;
+  color: var(--dsw-alias-label-secondary, #a3a3a3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dsh-cm-move-list {
+  display: flex; flex-direction: column; gap: 6px;
+  max-height: 300px; overflow: auto; margin-top: 10px;
+}
+.dsh-cm-move-item {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  width: 100%; text-align: left; padding: 8px 10px;
+  border: .5px solid var(--dsw-alias-border-l2, rgba(127,127,127,.28));
+  border-radius: var(--dsw-radius-md, 10px);
+  background: transparent; color: inherit; font: inherit; cursor: pointer;
+}
+.dsh-cm-move-item:hover:not(:disabled) { background: var(--dsw-alias-button-floating-hover, rgba(127,127,127,.12)); }
+.dsh-cm-move-item:disabled { opacity: .5; cursor: default; }
+.dsh-cm-move-name { font-size: 13px; line-height: 18px; }
+.dsh-cm-move-path {
+  font-size: 11px; line-height: 16px; max-width: 100%;
+  color: var(--dsw-alias-label-secondary, #a3a3a3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dsh-cm-move-hint { font-size: 11px; line-height: 16px; color: var(--dsw-alias-state-warn-primary, #d19a27); }
 `;
 
     function createMultiSelect() {
@@ -1168,6 +1217,209 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
       );
     }
 
+    /** Move-to-workspace dialog state, shared by the menu row and the overlay. */
+    function createMoveDialogState() {
+      let state = { open: false, sessionId: '', title: '' };
+      const listeners = new Set();
+      const emit = () => {
+        for (const listener of [...listeners]) {
+          try {
+            listener();
+          } catch {
+            /* a broken subscriber must not break the dialog */
+          }
+        }
+      };
+      return {
+        get: () => state,
+        subscribe(listener) {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+        open(sessionId, title) {
+          state = { open: true, sessionId, title };
+          emit();
+        },
+        close() {
+          if (!state.open) return;
+          state = { open: false, sessionId: '', title: '' };
+          emit();
+        },
+      };
+    }
+
+    function useMoveDialogState(dialog) {
+      const [state, setState] = React.useState(dialog.get);
+      React.useEffect(() => {
+        setState(dialog.get());
+        return dialog.subscribe(() => setState(dialog.get()));
+      }, [dialog]);
+      return state;
+    }
+
+    function moveFolderIcon() {
+      return h(
+        'svg',
+        { viewBox: '0 0 24 24', width: 16, height: 16, fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': 'true', style: { flex: 'none' } },
+        h('path', { d: 'M3 7.5A2.5 2.5 0 0 1 5.5 5h3l2 2h8A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5z' }),
+        h('path', { d: 'M12 11v5' }),
+        h('path', { d: 'm9.6 13.6 2.4 2.4 2.4-2.4' }),
+      );
+    }
+
+    function MoveRow(props) {
+      const translate = typeof props.translate === 'function' ? props.translate : (key) => FALLBACK[key] || key;
+      const sessionId = typeof props.sessionId === 'string' ? props.sessionId : '';
+      const dialog = props.moveDialog;
+      const [hover, setHover] = React.useState(false);
+      const label = translate('move.label');
+      return h(
+        'button',
+        {
+          type: 'button',
+          role: 'menuitem',
+          'aria-label': label,
+          title: label,
+          'data-dsh-conversation-manager': 'move',
+          style: Object.assign({}, styles.button, {
+            color: 'var(--dsw-alias-label-primary, #e6e6e6)',
+            background: hover ? 'var(--dsw-alias-bg-layer-2, rgba(127,127,127,.14))' : 'transparent',
+          }),
+          onMouseEnter: () => setHover(true),
+          onMouseLeave: () => setHover(false),
+          onClick: (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (!dialog || typeof dialog.open !== 'function' || !sessionId) return;
+            dialog.open(sessionId, typeof props.displayTitle === 'string' ? props.displayTitle : '');
+          },
+        },
+        moveFolderIcon(),
+        h('span', { style: styles.label }, label),
+      );
+    }
+
+    function MoveDialogOverlay(props) {
+      const translate = typeof props.translate === 'function' ? props.translate : (key) => FALLBACK[key] || key;
+      const dialog = props.moveDialog;
+      const state = useMoveDialogState(dialog);
+      const [phase, setPhase] = React.useState('idle');
+      const [items, setItems] = React.useState([]);
+      const [errorText, setErrorText] = React.useState('');
+      const [busy, setBusy] = React.useState('');
+
+      React.useEffect(() => {
+        if (!state.open || !state.sessionId) {
+          setPhase('idle');
+          setItems([]);
+          setErrorText('');
+          setBusy('');
+          return undefined;
+        }
+        let alive = true;
+        setPhase('loading');
+        setItems([]);
+        setErrorText('');
+        setBusy('');
+        requestTrash('workspaces', { sessionId: state.sessionId })
+          .then((payload) => {
+            if (!alive) return;
+            setItems(Array.isArray(payload.items) ? payload.items : []);
+            setPhase('ready');
+          })
+          .catch((error) => {
+            if (!alive) return;
+            setErrorText(translate('move.failed').replace('{message}', error && error.message ? error.message : String(error)));
+            setPhase('error');
+          });
+        return () => {
+          alive = false;
+        };
+      }, [state.open, state.sessionId, translate]);
+
+      if (!state.open) return null;
+
+      const choose = async (item) => {
+        if (busy || !item || !item.compatible || item.current) return;
+        setBusy(item.id);
+        setErrorText('');
+        const beforeTops = snapshotRowTops();
+        try {
+          await requestTrash('move', { sessionId: state.sessionId, workspaceId: item.id });
+          dialog.close();
+          // The workspace snapshot arrives from the Host's follow stream; wait a
+          // beat, then replay the row shift so the move reads as motion.
+          window.setTimeout(() => {
+            animateRowsFrom(beforeTops);
+            const row = findRowElement(state.sessionId);
+            if (!row) return;
+            try {
+              row.setAttribute('data-dsh-cm-restored', '');
+              window.setTimeout(() => {
+                try {
+                  row.removeAttribute('data-dsh-cm-restored');
+                } catch {
+                  /* the row may have unmounted */
+                }
+              }, 1700);
+            } catch {
+              /* the row may have unmounted */
+            }
+          }, 380);
+        } catch (error) {
+          setErrorText(translate('move.failed').replace('{message}', error && error.message ? error.message : String(error)));
+          setBusy('');
+        }
+      };
+
+      const rows = items.map((item) => {
+        const disabled = Boolean(busy) || !item.compatible || item.current;
+        const hint = item.current ? translate('move.current') : item.compatible ? '' : translate('move.incompatible');
+        return h(
+          'button',
+          {
+            type: 'button',
+            key: item.id,
+            className: 'dsh-cm-move-item',
+            disabled,
+            title: item.path || '',
+            onClick: () => choose(item),
+          },
+          h('span', { className: 'dsh-cm-move-name' }, item.title || item.path || ''),
+          h('span', { className: 'dsh-cm-move-path' }, item.path || ''),
+          hint ? h('span', { className: 'dsh-cm-move-hint' }, hint) : null,
+        );
+      });
+
+      return h(
+        'div',
+        {
+          className: 'dsh-cm-modal-frame',
+          onClick: (event) => {
+            if (event.target === event.currentTarget) dialog.close();
+          },
+        },
+        h(
+          'div',
+          { className: 'dsh-cm-modal', role: 'dialog', 'aria-modal': 'true' },
+          h('div', { className: 'dsh-cm-modal-title' }, translate('move.title')),
+          h('div', { className: 'dsh-cm-modal-body' }, translate('move.subtitle')),
+          state.title ? h('div', { className: 'dsh-cm-move-session' }, state.title) : null,
+          phase === 'loading'
+            ? h('div', { className: 'dsh-cm-trash-empty' }, translate('trash.loading'))
+            : phase === 'error'
+              ? h('div', { className: 'dsh-cm-modal-error' }, errorText)
+              : h('div', { className: 'dsh-cm-move-list' }, rows.length > 0 ? rows : h('div', { className: 'dsh-cm-trash-empty' }, translate('move.empty'))),
+          errorText && phase !== 'error' ? h('div', { className: 'dsh-cm-modal-error' }, errorText) : null,
+          h(
+            'div',
+            { className: 'dsh-cm-modal-actions' },
+            h('button', { type: 'button', className: 'dsh-cm-ghost', disabled: Boolean(busy), onClick: () => dialog.close() }, translate('move.cancel')),
+          ),
+        ),
+      );
+    }
+
     function MultiSelectOverlay(props) {
       const multi = props.multi;
       const translate = typeof props.translate === 'function' ? props.translate : (key) => FALLBACK[key] || key;
@@ -1663,6 +1915,21 @@ html.dsh-cm-multi [data-row-key^="session:"][data-dsh-cm-selected] { background:
               { name: 'shell.overlay', id: 'dsh-conversation-manager.multi-select', order: 900 },
               Overlay,
             ),
+          ),
+        );
+
+        // "Move to workspace…" row in the session menu plus its overlay dialog.
+        const moveDialog = createMoveDialogState();
+        const MoveToWorkspace = (props) => h(MoveRow, Object.assign({}, props, { translate, moveDialog }));
+        track(() =>
+          ctx.slots.inject(SLOT, () =>
+            ctx.slots.register({ name: SLOT, id: 'dsh-conversation-manager.move', order: 450 }, MoveToWorkspace),
+          ),
+        );
+        const MoveDialog = (props) => h(MoveDialogOverlay, Object.assign({}, props, { translate, moveDialog }));
+        track(() =>
+          ctx.slots.inject('shell.overlay', () =>
+            ctx.slots.register({ name: 'shell.overlay', id: 'dsh-conversation-manager.move-dialog', order: 901 }, MoveDialog),
           ),
         );
 
